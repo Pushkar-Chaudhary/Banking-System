@@ -1,5 +1,14 @@
 const nodemailer = require('nodemailer');
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function getTransporter() {
   const emailUser = process.env.EMAIL_USER;
   const emailPass = process.env.EMAIL_PASS || process.env.EMAIL_PASSWORD;
@@ -86,7 +95,7 @@ async function sendRegistrationOtpEmail(userEmail, name, otp) {
         <span style="font-size: 13px; font-weight: 700; letter-spacing: 2px; color: #b45309; text-transform: uppercase;">SAJILO PASAL</span>
         <h2 style="font-size: 24px; margin: 8px 0 0 0; color: #1c1917;">Account Verification Code</h2>
       </div>
-      <p style="font-size: 15px; line-height: 1.6; margin-bottom: 20px;">Hello <strong>${name || 'there'}</strong>,</p>
+      <p style="font-size: 15px; line-height: 1.6; margin-bottom: 20px;">Hello <strong>${escapeHtml(name || 'there')}</strong>,</p>
       <p style="font-size: 15px; line-height: 1.6; margin-bottom: 24px;">Thank you for registering with Sajilo Pasal. Please use the one-time verification code below to complete your registration:</p>
       <div style="text-align: center; margin: 32px 0;">
         <div style="display: inline-block; background: #ffffff; border: 2px dashed #b45309; border-radius: 8px; padding: 18px 36px;">
@@ -113,7 +122,7 @@ async function sendRegistrationEmail(userEmail, name) {
         <span style="font-size: 13px; font-weight: 700; letter-spacing: 2px; color: #b45309; text-transform: uppercase;">SAJILO PASAL</span>
         <h2 style="font-size: 24px; margin: 8px 0 0 0; color: #1c1917;">Welcome to Sajilo Pasal!</h2>
       </div>
-      <p style="font-size: 15px; line-height: 1.6; margin-bottom: 16px;">Hello <strong>${name}</strong>,</p>
+      <p style="font-size: 15px; line-height: 1.6; margin-bottom: 16px;">Hello <strong>${escapeHtml(name)}</strong>,</p>
       <p style="font-size: 15px; line-height: 1.6; margin-bottom: 20px;">We're thrilled to welcome you to the Sajilo Pasal community. Your account is now active and ready to go.</p>
       <div style="background: #ffffff; border-radius: 8px; padding: 20px; border: 1px solid #e7dfd5; margin-bottom: 24px;">
         <p style="margin: 0 0 8px 0; font-weight: 600;">Here is what you can do:</p>
@@ -140,7 +149,7 @@ async function sendOrderConfirmationToBuyer({ buyerEmail, buyerName, orders, shi
 
   const itemsRows = orderList.flatMap((ord) => ord.items || []).map((item) => `
     <tr>
-      <td style="padding: 10px 8px; border-bottom: 1px solid #eee;">${item.productName}</td>
+      <td style="padding: 10px 8px; border-bottom: 1px solid #eee;">${escapeHtml(item.productName)}</td>
       <td style="padding: 10px 8px; border-bottom: 1px solid #eee; text-align: center;">${item.quantity}</td>
       <td style="padding: 10px 8px; border-bottom: 1px solid #eee; text-align: right;">NPR ${(item.price || 0).toLocaleString()}</td>
       <td style="padding: 10px 8px; border-bottom: 1px solid #eee; text-align: right; font-weight: 600;">NPR ${(item.subtotal || 0).toLocaleString()}</td>
@@ -149,6 +158,15 @@ async function sendOrderConfirmationToBuyer({ buyerEmail, buyerName, orders, shi
 
   const totalShipping = orderList.reduce((sum, ord) => sum + (ord.shippingCost || 0), 0);
   const formattedMethod = paymentMethod === 'esewa' ? 'eSewa Online Payment' : 'Cash on Delivery (COD)';
+  const safeAddress = {
+    fullName: escapeHtml(shippingAddress?.fullName),
+    phone: escapeHtml(shippingAddress?.phone),
+    addressLine1: escapeHtml(shippingAddress?.addressLine1),
+    addressLine2: escapeHtml(shippingAddress?.addressLine2),
+    city: escapeHtml(shippingAddress?.city),
+    state: escapeHtml(shippingAddress?.state),
+    country: escapeHtml(shippingAddress?.country || 'Nepal')
+  };
 
   const text = `Hello ${buyerName},\n\nThank you for your order! Your order #${orderCode} (${orderCount} shipment(s)) totaling NPR ${checkoutTotal.toLocaleString()} has been placed.\n\nPayment Method: ${formattedMethod}\nDelivery to: ${shippingAddress?.fullName}, ${shippingAddress?.addressLine1}, ${shippingAddress?.city}, ${shippingAddress?.state}\n\nWe will notify you once items are dispatched.\n\nBest regards,\nSajilo Pasal`;
 
@@ -160,7 +178,7 @@ async function sendOrderConfirmationToBuyer({ buyerEmail, buyerName, orders, shi
         <p style="color: #78716c; font-size: 14px; margin-top: 4px;">Reference #${orderCode}</p>
       </div>
 
-      <p style="font-size: 15px; line-height: 1.6;">Hello <strong>${buyerName}</strong>,</p>
+      <p style="font-size: 15px; line-height: 1.6;">Hello <strong>${escapeHtml(buyerName)}</strong>,</p>
       <p style="font-size: 15px; line-height: 1.6;">Thank you for shopping with us! We have received your order.</p>
 
       <div style="background: #ffffff; border-radius: 8px; border: 1px solid #e7dfd5; overflow: hidden; margin: 20px 0;">
@@ -192,10 +210,10 @@ async function sendOrderConfirmationToBuyer({ buyerEmail, buyerName, orders, shi
       <div style="background: #ffffff; border-radius: 8px; padding: 16px; border: 1px solid #e7dfd5; margin-bottom: 20px; font-size: 14px;">
         <p style="margin: 0 0 8px 0; font-weight: 700; color: #1c1917;">Shipping Address:</p>
         <p style="margin: 0; color: #57534e; line-height: 1.5;">
-          ${shippingAddress?.fullName}<br/>
-          ${shippingAddress?.phone}<br/>
-          ${shippingAddress?.addressLine1}${shippingAddress?.addressLine2 ? ', ' + shippingAddress.addressLine2 : ''}<br/>
-          ${shippingAddress?.city}, ${shippingAddress?.state}, ${shippingAddress?.country || 'Nepal'}
+          ${safeAddress.fullName}<br/>
+          ${safeAddress.phone}<br/>
+          ${safeAddress.addressLine1}${safeAddress.addressLine2 ? ', ' + safeAddress.addressLine2 : ''}<br/>
+          ${safeAddress.city}, ${safeAddress.state}, ${safeAddress.country}
         </p>
         <p style="margin: 12px 0 0 0; font-weight: 600; color: #1c1917;">Payment Method: <span style="font-weight: 400; color: #57534e;">${formattedMethod}</span></p>
       </div>
@@ -215,7 +233,7 @@ async function sendOrderNotificationToSeller({ sellerEmail, sellerName, order, s
   const items = sellerItems || order.items || [];
   const itemsRows = items.map((item) => `
     <tr>
-      <td style="padding: 10px 8px; border-bottom: 1px solid #eee;">${item.productName}</td>
+      <td style="padding: 10px 8px; border-bottom: 1px solid #eee;">${escapeHtml(item.productName)}</td>
       <td style="padding: 10px 8px; border-bottom: 1px solid #eee; text-align: center;">${item.quantity}</td>
       <td style="padding: 10px 8px; border-bottom: 1px solid #eee; text-align: right;">NPR ${(item.price || 0).toLocaleString()}</td>
       <td style="padding: 10px 8px; border-bottom: 1px solid #eee; text-align: right; font-weight: 600;">NPR ${(item.subtotal || 0).toLocaleString()}</td>
@@ -224,6 +242,16 @@ async function sendOrderNotificationToSeller({ sellerEmail, sellerName, order, s
 
   const sellerTotal = items.reduce((sum, item) => sum + (item.subtotal || 0), 0) + (order.shippingCost || 0);
   const formattedMethod = order.paymentMethod === 'esewa' ? 'eSewa Online Payment' : 'Cash on Delivery (COD)';
+  const safeCustomer = {
+    name: escapeHtml(buyerInfo?.name || shippingAddress?.fullName || 'Customer'),
+    phone: escapeHtml(shippingAddress?.phone || buyerInfo?.phone || 'N/A'),
+    email: escapeHtml(buyerInfo?.email || 'N/A'),
+    addressLine1: escapeHtml(shippingAddress?.addressLine1),
+    addressLine2: escapeHtml(shippingAddress?.addressLine2),
+    city: escapeHtml(shippingAddress?.city),
+    state: escapeHtml(shippingAddress?.state),
+    country: escapeHtml(shippingAddress?.country || 'Nepal')
+  };
 
   const text = `Hello ${sellerName},\n\nYou have received a new order #${orderCode} on Sajilo Pasal!\n\nCustomer Details:\nName: ${buyerInfo?.name || shippingAddress?.fullName}\nPhone: ${shippingAddress?.phone || buyerInfo?.phone || 'N/A'}\nEmail: ${buyerInfo?.email || 'N/A'}\nDelivery Address: ${shippingAddress?.addressLine1}, ${shippingAddress?.city}, ${shippingAddress?.state}\n\nItems:\n${items.map(i => `- ${i.productName} x ${i.quantity} (NPR ${i.subtotal})`).join('\n')}\n\nTotal: NPR ${sellerTotal.toLocaleString()}\nPayment: ${formattedMethod} (${order.paymentStatus})\n\nPlease visit your Seller Studio to manage fulfillment.\n\nBest regards,\nSajilo Pasal Team`;
 
@@ -235,15 +263,15 @@ async function sendOrderNotificationToSeller({ sellerEmail, sellerName, order, s
         <p style="color: #78716c; font-size: 14px; margin-top: 4px;">Order #${orderCode}</p>
       </div>
 
-      <p style="font-size: 15px; line-height: 1.6;">Hello <strong>${sellerName}</strong>,</p>
+      <p style="font-size: 15px; line-height: 1.6;">Hello <strong>${escapeHtml(sellerName)}</strong>,</p>
       <p style="font-size: 15px; line-height: 1.6;">A customer has placed an order containing your products. Here is the complete order information:</p>
 
       <div style="background: #ffffff; border-radius: 8px; padding: 16px; border: 1px solid #e7dfd5; margin: 20px 0; font-size: 14px;">
         <h3 style="margin: 0 0 10px 0; font-size: 16px; color: #1c1917; border-bottom: 1px solid #eee; padding-bottom: 6px;">Customer & Delivery Information</h3>
-        <p style="margin: 4px 0;"><strong>Customer Name:</strong> ${buyerInfo?.name || shippingAddress?.fullName}</p>
-        <p style="margin: 4px 0;"><strong>Customer Phone:</strong> <a href="tel:${shippingAddress?.phone}" style="color: #b45309; text-decoration: none;">${shippingAddress?.phone || 'N/A'}</a></p>
-        <p style="margin: 4px 0;"><strong>Customer Email:</strong> ${buyerInfo?.email || 'N/A'}</p>
-        <p style="margin: 4px 0;"><strong>Delivery Address:</strong> ${shippingAddress?.addressLine1}${shippingAddress?.addressLine2 ? ', ' + shippingAddress.addressLine2 : ''}, ${shippingAddress?.city}, ${shippingAddress?.state}, ${shippingAddress?.country || 'Nepal'}</p>
+        <p style="margin: 4px 0;"><strong>Customer Name:</strong> ${safeCustomer.name}</p>
+        <p style="margin: 4px 0;"><strong>Customer Phone:</strong> <a href="tel:${safeCustomer.phone}" style="color: #b45309; text-decoration: none;">${safeCustomer.phone}</a></p>
+        <p style="margin: 4px 0;"><strong>Customer Email:</strong> ${safeCustomer.email}</p>
+        <p style="margin: 4px 0;"><strong>Delivery Address:</strong> ${safeCustomer.addressLine1}${safeCustomer.addressLine2 ? ', ' + safeCustomer.addressLine2 : ''}, ${safeCustomer.city}, ${safeCustomer.state}, ${safeCustomer.country}</p>
         <p style="margin: 8px 0 0 0;"><strong>Payment Method:</strong> ${formattedMethod} (${order.paymentStatus})</p>
       </div>
 
@@ -281,10 +309,38 @@ async function sendOrderNotificationToSeller({ sellerEmail, sellerName, order, s
   return sendEmail(sellerEmail, subject, text, html);
 }
 
+async function sendPasswordResetOtpEmail(userEmail, name, otp) {
+  const subject = `Your Sajilo Pasal password reset code: ${otp}`;
+  const text = `Hello ${name || 'there'},\n\nWe received a request to reset your Sajilo Pasal password.\n\nYour password reset code is:\n\n${otp}\n\nThis code will expire in 10 minutes. If you did not request a password reset, you can safely ignore this email.\n\nWarm regards,\nThe Sajilo Pasal Team`;
+
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 580px; margin: 0 auto; padding: 32px 24px; background: #faf8f5; border: 1px solid #e7dfd5; border-radius: 12px; color: #2c2523;">
+      <div style="text-align: center; margin-bottom: 24px;">
+        <span style="font-size: 13px; font-weight: 700; letter-spacing: 2px; color: #b45309; text-transform: uppercase;">SAJILO PASAL</span>
+        <h2 style="font-size: 24px; margin: 8px 0 0 0; color: #1c1917;">Reset Your Password</h2>
+      </div>
+      <p style="font-size: 15px; line-height: 1.6; margin-bottom: 20px;">Hello <strong>${escapeHtml(name || 'there')}</strong>,</p>
+      <p style="font-size: 15px; line-height: 1.6; margin-bottom: 24px;">We received a request to reset your Sajilo Pasal password. Enter this code on the reset page to choose a new password:</p>
+      <div style="text-align: center; margin: 32px 0;">
+        <div style="display: inline-block; background: #ffffff; border: 2px dashed #b45309; border-radius: 8px; padding: 18px 36px;">
+          <span style="font-size: 36px; font-weight: 800; letter-spacing: 8px; color: #1c1917;">${otp}</span>
+        </div>
+        <p style="font-size: 13px; color: #78716c; margin-top: 10px;">Valid for 10 minutes</p>
+      </div>
+      <p style="font-size: 14px; line-height: 1.5; color: #57534e; margin-bottom: 28px;">If you did not request a password reset, no action is needed — your password stays unchanged.</p>
+      <hr style="border: none; border-top: 1px solid #e7dfd5; margin: 24px 0;" />
+      <p style="font-size: 12px; color: #a8a29e; text-align: center; margin: 0;">&copy; ${new Date().getFullYear()} Sajilo Pasal. Empowering local businesses across Nepal.</p>
+    </div>
+  `;
+
+  return sendEmail(userEmail, subject, text, html);
+}
+
 module.exports = {
   sendEmail,
   sendRegistrationOtpEmail,
   sendRegistrationEmail,
+  sendPasswordResetOtpEmail,
   sendOrderConfirmationToBuyer,
   sendOrderNotificationToSeller
 };

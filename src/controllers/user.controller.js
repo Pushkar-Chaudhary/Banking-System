@@ -18,10 +18,22 @@ async function updateProfile(req, res) {
     const user = await userModel.findById(req.user._id);
     const { name, email, phone, address } = req.body;
 
-    if (name) user.name = String(name).trim();
-    if (email) user.email = String(email).trim().toLowerCase();
-    if (phone) user.phone = String(phone).trim();
-    if (address) user.address = address;
+    if (name !== undefined) {
+      const trimmedName = String(name).trim();
+      if (!trimmedName || trimmedName.length > 120) {
+        return res.status(400).json({ message: 'Provide a name between 1 and 120 characters' });
+      }
+      user.name = trimmedName;
+    }
+    if (email !== undefined) {
+      user.email = String(email).trim().toLowerCase();
+    }
+    if (phone !== undefined) {
+      user.phone = String(phone).trim().slice(0, 20);
+    }
+    if (address !== undefined) {
+      user.address = String(address).trim().slice(0, 240);
+    }
 
     await user.save();
 
@@ -29,6 +41,12 @@ async function updateProfile(req, res) {
     delete safeUser.password;
     return res.json({ message: 'Profile updated successfully', user: safeUser });
   } catch (error) {
+    if (error.code === 11000) {
+      return res.status(409).json({ message: 'That email address is already in use by another account' });
+    }
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({ message: error.message });
+    }
     return serverError(res, 'Failed to update profile', error);
   }
 }
@@ -92,8 +110,8 @@ async function addToCart(req, res) {
 async function updateCartItem(req, res) {
   try {
     const { quantity } = req.body;
-    if (!Number.isInteger(Number(quantity)) || Number(quantity) <= 0) {
-      return res.status(400).json({ message: 'Quantity must be a positive integer' });
+    if (!Number.isInteger(Number(quantity)) || Number(quantity) <= 0 || Number(quantity) > 99) {
+      return res.status(400).json({ message: 'Quantity must be between 1 and 99' });
     }
 
     const user = await userModel.findById(req.user._id);

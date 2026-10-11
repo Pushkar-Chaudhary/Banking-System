@@ -19,13 +19,45 @@ const app = express();
 const frontendBuild = path.join(__dirname, '..', 'dist');
 
 app.disable('x-powered-by');
-app.set('trust proxy', process.env.TRUST_PROXY === 'true' ? 1 : 1);
+// Trust exactly the configured number of proxy hops so rate limiting sees real client IPs.
+// Unset or non-numeric values disable trust so spoofed X-Forwarded-For headers cannot bypass rate limits.
+const trustProxyHops = Number.parseInt(process.env.TRUST_PROXY, 10);
+app.set('trust proxy', Number.isInteger(trustProxyHops) && trustProxyHops > 0 ? trustProxyHops : false);
+
+function parseOrigin(value) {
+  if (!value) return null;
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
+}
+
+const allowedOrigins = new Set(
+  [process.env.FRONTEND_URL, process.env.API_PUBLIC_URL].map(parseOrigin).filter(Boolean)
+);
+if (process.env.NODE_ENV !== 'production') {
+  allowedOrigins.add('http://localhost:5173');
+  allowedOrigins.add('http://localhost:3000');
+  allowedOrigins.add('http://localhost:4173');
+}
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (like mobile apps, curl, or same-origin)
+    // No origin header: same-origin GETs, curl, or native apps.
     if (!origin) return callback(null, true);
-    return callback(null, true);
+    if (allowedOrigins.has(origin)) return callback(null, true);
+    if (process.env.NODE_ENV !== 'production') return callback(null, true);
+    // Accept scheme variations (http/https) of an allowlisted host.
+    try {
+      const requestedHost = new URL(origin).host;
+      if ([...allowedOrigins].some((allowed) => new URL(allowed).host === requestedHost)) {
+        return callback(null, true);
+      }
+    } catch {
+      // Fall through to rejection for malformed origins.
+    }
+    return callback(null, false);
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -53,9 +85,21 @@ const authLimiter = rateLimit({
   legacyHeaders: false,
   message: { message: 'Too many authentication attempts. Please try again later.' }
 });
+const sensitiveLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 60,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { message: 'Too many requests. Please slow down and try again shortly.' }
+});
+
 app.use('/api/v1/auth/login', authLimiter);
 app.use('/api/v1/auth/register', authLimiter);
 app.use('/api/v1/auth/send-registration-otp', authLimiter);
+app.use('/api/v1/auth/forgot-password', authLimiter);
+app.use('/api/v1/auth/reset-password', authLimiter);
+app.use('/api/v1/orders', (req, res, next) => (req.method === 'POST' ? sensitiveLimiter(req, res, next) : next()));
+app.use('/api/v1/payments/esewa/initiate', sensitiveLimiter);
 
 app.use('/api/v1/auth', authRouter);
 app.use('/api/v1/products', productRouter);

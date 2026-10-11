@@ -1,38 +1,61 @@
 const mongoose = require('mongoose');
 const Order = require('../models/order.model');
 const Product = require('../models/product.model');
+const Checkout = require('../models/checkout.model');
 const userModel = require('../models/user.model');
 const emailService = require('../services/email.service');
 const { releaseOrderStock } = require('../services/inventory.service');
 const { serverError } = require('../services/http.service');
 const { PROVINCES } = require('../constants/nepal');
 const { decryptSellerSecret } = require('../services/seller-payment.service');
+const { parsePagination } = require('../services/pagination.service');
 
 function calculateShipping(subtotal) {
   return subtotal >= 5000 ? 0 : 200;
 }
 
+function normalizeShippingAddress(shippingAddress) {
+  const text = (value) => (typeof value === 'string' ? value.trim() : '');
+  return {
+    fullName: text(shippingAddress.fullName),
+    phone: text(shippingAddress.phone),
+    addressLine1: text(shippingAddress.addressLine1),
+    addressLine2: text(shippingAddress.addressLine2),
+    city: text(shippingAddress.city),
+    state: text(shippingAddress.state),
+    postalCode: text(shippingAddress.postalCode),
+    country: text(shippingAddress.country)
+  };
+}
+
+async function findCheckoutOrders(checkoutId, buyerId) {
+  return Order.find({ checkoutId, buyer: buyerId }).sort({ createdAt: 1 }).lean();
+}
+
 async function createOrder(req, res) {
   const session = await mongoose.startSession();
   let orderDocs = [];
+  let checkoutId;
 
   try {
-    const { items, shippingAddress, paymentMethod } = req.body;
+    const { items, paymentMethod } = req.body;
+    const shippingAddress = normalizeShippingAddress(req.body.shippingAddress || {});
+
+    const requestedCheckoutId = typeof req.body.checkoutId === 'string' ? req.body.checkoutId.trim() : '';
+    if (requestedCheckoutId && !mongoose.isValidObjectId(requestedCheckoutId)) {
+      return res.status(400).json({ message: 'The checkout reference is invalid' });
+    }
 
     if (!Array.isArray(items) || items.length === 0 || items.length > 50) {
       return res.status(400).json({ message: 'Provide between 1 and 50 order items' });
     }
 
     const addressFields = ['fullName', 'phone', 'addressLine1', 'city', 'state', 'country'];
-    if (!shippingAddress || addressFields.some((field) => (
-      typeof shippingAddress[field] !== 'string'
-      || !shippingAddress[field].trim()
-      || shippingAddress[field].trim().length > 160
-    ))) {
+    if (addressFields.some((field) => !shippingAddress[field] || shippingAddress[field].length > 160)) {
       return res.status(400).json({ message: 'Complete shipping information is required' });
     }
-    if (shippingAddress.country.trim() !== 'Nepal'
-      || !PROVINCES.includes(shippingAddress.state.trim())) {
+    if (shippingAddress.country !== 'Nepal'
+      || !PROVINCES.includes(shippingAddress.state)) {
       return res.status(400).json({ message: 'Delivery is currently available only within Nepal' });
     }
 
@@ -121,7 +144,9 @@ async function createOrder(req, res) {
       return res.status(409).json({ message: 'One or more sellers are unavailable' });
     }
 
-    const checkoutId = new mongoose.Types.ObjectId();
+    checkoutId = requestedCheckoutId
+      ? new mongoose.Types.ObjectId(requestedCheckoutId)
+      : new mongoose.Types.ObjectId();
     const orderInputs = [];
     for (const [sellerId, itemsForSeller] of sellerItems) {
       const sellerSubtotal = itemsForSeller.reduce((sum, item) => sum + item.subtotal, 0);
@@ -143,6 +168,8 @@ async function createOrder(req, res) {
     }
 
     await session.withTransaction(async () => {
+      await Checkout.create([{ _id: checkoutId, buyer: req.user._id }], { session });
+
       for (const item of normalizedItems) {
         const result = await Product.updateOne(
           {
@@ -215,7 +242,22 @@ async function createOrder(req, res) {
       order: orderDocs[0]
     });
   } catch (error) {
-    const clientError = error.message.startsWith('Insufficient stock');
+    if (error && error.code === 11000 && checkoutId) {
+      // The checkout was already submitted (double click or network retry).
+      // Return the existing orders instead of creating duplicates.
+      const existingOrders = await findCheckoutOrders(checkoutId, req.user._id);
+      if (existingOrders.length) {
+        return res.status(200).json({
+          message: 'These orders were already placed for this checkout',
+          checkoutId,
+          orders: existingOrders,
+          order: existingOrders[0],
+          duplicate: true
+        });
+      }
+      return res.status(409).json({ message: 'This checkout reference was already used' });
+    }
+    const clientError = typeof error?.message === 'string' && error.message.startsWith('Insufficient stock');
     if (clientError) {
       return res.status(409).json({ message: error.message });
     }
@@ -263,8 +305,12 @@ async function getCheckoutOrders(req, res) {
 
 async function getMyOrders(req, res) {
   try {
-    const orders = await Order.find({ buyer: req.user._id }).sort({ createdAt: -1 }).populate('items.product', 'name images').lean();
-    return res.json({ orders });
+    const { page, limit, skip } = parsePagination(req.query, { defaultLimit: 20, maxLimit: 100 });
+    const [orders, total] = await Promise.all([
+      Order.find({ buyer: req.user._id }).sort({ createdAt: -1 }).populate('items.product', 'name images').skip(skip).limit(limit).lean(),
+      Order.countDocuments({ buyer: req.user._id })
+    ]);
+    return res.json({ orders, page, pages: Math.ceil(total / limit) || 1, total });
   } catch (error) {
     return serverError(res, 'Failed to fetch orders', error);
   }
@@ -382,11 +428,32 @@ async function updateSellerFulfillment(req, res) {
 
 async function getSellerOrders(req, res) {
   try {
-    const orders = await Order.find({ 'items.seller': req.user._id })
-      .sort({ createdAt: -1 })
-      .populate('items.product', 'name images')
-      .populate('buyer', 'name email phone')
-      .lean();
+    const { page, limit, skip } = parsePagination(req.query, { defaultLimit: 20, maxLimit: 100 });
+    const sellerFilter = { 'items.seller': req.user._id };
+    const [orders, total, sales] = await Promise.all([
+      Order.find(sellerFilter)
+        .sort({ createdAt: -1 })
+        .populate('items.product', 'name images')
+        .populate('buyer', 'name email phone')
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Order.countDocuments(sellerFilter),
+      Order.aggregate([
+        {
+          $match: {
+            'items.seller': req.user._id,
+            $or: [
+              { paymentStatus: 'PAID' },
+              { paymentMethod: 'cash_on_delivery', orderStatus: 'DELIVERED' }
+            ]
+          }
+        },
+        { $unwind: '$items' },
+        { $match: { 'items.seller': req.user._id } },
+        { $group: { _id: null, total: { $sum: '$items.subtotal' } } }
+      ])
+    ]);
 
     const sellerOrders = orders.map((order) => {
       const myItems = order.items.filter((item) => String(item.seller) === String(req.user._id));
@@ -397,7 +464,13 @@ async function getSellerOrders(req, res) {
         sellerSubtotal
       };
     });
-    return res.json({ orders: sellerOrders });
+    return res.json({
+      orders: sellerOrders,
+      page,
+      pages: Math.ceil(total / limit) || 1,
+      total,
+      salesTotal: sales[0]?.total || 0
+    });
   } catch (error) {
     return serverError(res, 'Failed to fetch seller orders', error);
   }

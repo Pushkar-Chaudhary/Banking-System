@@ -45,6 +45,86 @@ const demoProducts = [
     category: 'vegetables',
     location: { country: 'Nepal', province: 'Gandaki', district: 'Mustang', municipality: 'Gharpajhong', ward: '' },
     images: ['https://images.unsplash.com/photo-1560806887-1e4cd0b6cbd6?auto=format&fit=crop&w=900&q=80']
+  },
+  {
+    slug: 'demo-terai-basmati-rice',
+    name: 'Terai Basmati Rice (5 kg)',
+    description: 'Aromatic long-grain rice from the fields of Rupandehi.',
+    price: 850,
+    stock: 15,
+    category: 'grocery',
+    location: { country: 'Nepal', province: 'Lumbini', district: 'Rupandehi', municipality: 'Butwal', ward: '' },
+    images: ['https://images.unsplash.com/photo-1571771894821-ce9b6c11b08e?auto=format&fit=crop&w=900&q=80']
+  },
+  {
+    slug: 'demo-jumli-marshi-red-rice',
+    name: 'Jumli Marshi Red Rice (2 kg)',
+    description: 'Cold-climate red rice grown in the high valleys of Jumla.',
+    price: 450,
+    stock: 7,
+    category: 'grocery',
+    location: { country: 'Nepal', province: 'Karnali', district: 'Jumla', municipality: 'Chandannath', ward: '' },
+    images: ['https://images.unsplash.com/photo-1586201375761-83865001e31c?auto=format&fit=crop&w=900&q=80']
+  },
+  {
+    slug: 'demo-nuwakot-vine-tomatoes',
+    name: 'Nuwakot Vine Tomatoes',
+    description: 'Sun-ripened tomatoes picked the same morning from Nuwakot hills.',
+    price: 120,
+    stock: 18,
+    category: 'vegetables',
+    location: { country: 'Nepal', province: 'Bagmati', district: 'Nuwakot', municipality: 'Bidur', ward: '' },
+    images: ['https://images.unsplash.com/photo-1592924357228-91a4daadcfea?auto=format&fit=crop&w=900&q=80']
+  },
+  {
+    slug: 'demo-kavre-orchard-oranges',
+    name: 'Kavre Orchard Oranges',
+    description: 'Sweet citrus from the orange gardens of Kavrepalanchok.',
+    price: 280,
+    stock: 14,
+    category: 'vegetables',
+    location: { country: 'Nepal', province: 'Bagmati', district: 'Kavrepalanchok', municipality: 'Banepa', ward: '' },
+    images: ['https://images.unsplash.com/photo-1547514701-42782101795e?auto=format&fit=crop&w=900&q=80']
+  },
+  {
+    slug: 'demo-gulmi-highland-coffee',
+    name: 'Gulmi Highland Coffee Beans (250 g)',
+    description: 'Hand-picked arabica beans from the coffee hills of Gulmi.',
+    price: 750,
+    stock: 9,
+    category: 'drinks',
+    location: { country: 'Nepal', province: 'Lumbini', district: 'Gulmi', municipality: 'Tamghas', ward: '' },
+    images: ['https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?auto=format&fit=crop&w=900&q=80']
+  },
+  {
+    slug: 'demo-tarai-malda-mangoes',
+    name: 'Tarai Malda Mangoes',
+    description: 'Juicy Malda mangoes from the orchards of the eastern Tarai.',
+    price: 350,
+    stock: 8,
+    category: 'vegetables',
+    location: { country: 'Nepal', province: 'Madhesh', district: 'Dhanusha', municipality: 'Janakpur', ward: '' },
+    images: ['https://images.unsplash.com/photo-1553279768-865429fa0078?auto=format&fit=crop&w=900&q=80']
+  },
+  {
+    slug: 'demo-dhangadhi-dairy-milk',
+    name: 'Dhangadhi Dairy Milk (1 L)',
+    description: 'Fresh morning milk delivered from a family dairy in Kailali.',
+    price: 95,
+    stock: 24,
+    category: 'grocery',
+    location: { country: 'Nepal', province: 'Sudurpashchim', district: 'Kailali', municipality: 'Dhangadhi', ward: '' },
+    images: ['https://images.unsplash.com/photo-1563636619-e9143da7973b?auto=format&fit=crop&w=900&q=80']
+  },
+  {
+    slug: 'demo-mustang-red-potatoes',
+    name: 'Mustang Red Potatoes (5 kg)',
+    description: 'Famous high-altitude potatoes from the terraces of Mustang.',
+    price: 90,
+    stock: 20,
+    category: 'vegetables',
+    location: { country: 'Nepal', province: 'Gandaki', district: 'Mustang', municipality: 'Gharpajhong', ward: '' },
+    images: ['https://images.unsplash.com/photo-1518977676601-b53f82aba655?auto=format&fit=crop&w=900&q=80']
   }
 ];
 

@@ -1,6 +1,7 @@
 const Product = require('../models/product.model');
 const Category = require('../models/category.model');
 const { serverError } = require('../services/http.service');
+const { parsePagination } = require('../services/pagination.service');
 const mongoose = require('mongoose');
 const { PROVINCES } = require('../constants/nepal');
 
@@ -35,12 +36,15 @@ function buildProductQuery(query = {}) {
   }
 
   if (query.search) {
-    const regex = new RegExp(escapeRegex(query.search), 'i');
-    filters.$or = [
-      { name: regex },
-      { description: regex },
-      { category: regex }
-    ];
+    const term = String(query.search).trim().slice(0, 100);
+    if (term) {
+      const regex = new RegExp(escapeRegex(term), 'i');
+      filters.$or = [
+        { name: regex },
+        { description: regex },
+        { category: regex }
+      ];
+    }
   }
 
   if (query.province) {
@@ -290,16 +294,25 @@ async function deleteProduct(req, res) {
 
 async function getSellerProducts(req, res) {
   try {
+    const { page, limit, skip } = parsePagination(req.query, { defaultLimit: 50, maxLimit: 200 });
     const filters = { seller: req.user._id };
     if (req.query.search) {
-      filters.$or = [
-        { name: new RegExp(escapeRegex(req.query.search), 'i') },
-        { category: new RegExp(escapeRegex(req.query.search), 'i') }
-      ];
+      const term = String(req.query.search).trim().slice(0, 100);
+      if (term) {
+        const regex = new RegExp(escapeRegex(term), 'i');
+        filters.$or = [
+          { name: regex },
+          { category: regex }
+        ];
+      }
     }
 
-    const products = await Product.find(filters).sort({ createdAt: -1 }).lean();
-    return res.json({ products });
+    const [products, total, activeCount] = await Promise.all([
+      Product.find(filters).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      Product.countDocuments(filters),
+      Product.countDocuments({ seller: req.user._id, isActive: true })
+    ]);
+    return res.json({ products, page, pages: Math.ceil(total / limit) || 1, total, activeCount });
   } catch (error) {
     return serverError(res, 'Failed to fetch seller products', error);
   }

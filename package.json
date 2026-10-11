@@ -1,7 +1,8 @@
 {
-  "name": "banking-system",
+  "name": "sajilo-pasal",
   "version": "1.0.0",
-  "description": "",
+  "description": "React storefront and Express/MongoDB marketplace API for Sajilo Pasal",
+  "private": true,
   "main": "server.js",
   "engines": {
     "node": ">=22"

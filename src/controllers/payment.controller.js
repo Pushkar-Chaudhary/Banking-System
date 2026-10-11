@@ -70,12 +70,29 @@ async function initiateEsewaPayment(req, res) {
       merchantSecret
     });
 
-    order.transactionId = transactionUuid;
-    order.paymentProductCode = merchantCode;
-    order.paymentSecretCiphertext = encryptedSecret;
-    order.paymentStatus = 'PENDING';
-    order.paymentExpiresAt = new Date(Date.now() + 30 * 60 * 1000);
-    await order.save();
+    // Claim the order for this attempt atomically so two parallel
+    // initiations cannot both hand the buyer a usable payment form.
+    const claimed = await Order.findOneAndUpdate(
+      {
+        _id: order._id,
+        paymentStatus: 'PENDING',
+        stockReleased: false,
+        orderStatus: 'PENDING',
+        $or: [{ transactionId: '' }, { transactionId: { $exists: false } }, { transactionId: null }]
+      },
+      {
+        $set: {
+          transactionId: transactionUuid,
+          paymentProductCode: merchantCode,
+          paymentSecretCiphertext: encryptedSecret,
+          paymentExpiresAt: new Date(Date.now() + 30 * 60 * 1000)
+        }
+      },
+      { new: true }
+    );
+    if (!claimed) {
+      return res.status(409).json({ message: 'A payment attempt is already in progress for this order' });
+    }
 
     return res.json({
       message: 'eSewa payment initialized',
@@ -151,9 +168,10 @@ async function processEsewaCallback(req, res) {
       } finally {
         await session.endSession();
       }
+      const finalStatus = confirmed || order.paymentStatus === 'PAID' ? 'paid' : 'pending';
       const destination = order.checkoutId
-        ? `/checkout/payments?checkoutId=${order.checkoutId}&status=${confirmed ? 'paid' : 'pending'}`
-        : `/payment/result?orderId=${order._id}&status=${confirmed ? 'paid' : 'pending'}`;
+        ? `/checkout/payments?checkoutId=${order.checkoutId}&status=${finalStatus}`
+        : `/payment/result?orderId=${order._id}&status=${finalStatus}`;
       return res.redirect(frontendUrl(destination));
     }
 

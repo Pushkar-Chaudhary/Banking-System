@@ -1,8 +1,23 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Link, Navigate, Route, Routes, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 const NPR = new Intl.NumberFormat('en-NP', { style: 'currency', currency: 'NPR', maximumFractionDigits: 0 });
 const tokenKey = 'sajilo-token';
+
+function useDocumentTitle(title) {
+  useEffect(() => {
+    document.title = title ? `${title} — Sajilo Pasal` : 'Sajilo Pasal — Shop local, live better';
+  }, [title]);
+}
+
+// 24 hex characters, same shape as a MongoDB ObjectId, doubling as the
+// server-side idempotency key for one checkout submission.
+function createCheckoutKey() {
+  const bytes = new Uint8Array(12);
+  window.crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 function submitPaymentForm(payment) {
   const form = document.createElement('form');
   form.method = 'POST';
@@ -108,6 +123,7 @@ function ProductCard({ product, onAdd, onBuyNow = onAdd, onRemove }) {
 }
 
 function Home({ session }) {
+  useDocumentTitle();
   const [params, setParams] = useSearchParams();
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -186,11 +202,12 @@ function Home({ session }) {
   } else if (products.length) {
     catalogContent = <>
       <div className="product-grid">{products.map((product) => <ProductCard key={product._id} product={product} onAdd={addToBag} onBuyNow={buyNow} />)}</div>
-      {pageCount > 1 && <nav className="pagination" aria-label="Product pages">
-        <button className="button button-outline" disabled={(Number(params.get('page')) || 1) <= 1} onClick={() => { const next = new URLSearchParams(params); next.set('page', String((Number(params.get('page')) || 1) - 1)); setParams(next); }}>Previous</button>
-        <span>Page {Number(params.get('page')) || 1} of {pageCount}</span>
-        <button className="button button-outline" disabled={(Number(params.get('page')) || 1) >= pageCount} onClick={() => { const next = new URLSearchParams(params); next.set('page', String((Number(params.get('page')) || 1) + 1)); setParams(next); }}>Next</button>
-      </nav>}
+      <Pager
+        page={Number(params.get('page')) || 1}
+        pages={pageCount}
+        onPage={(next) => { const nextParams = new URLSearchParams(params); nextParams.set('page', String(next)); setParams(nextParams); }}
+        label="Product pages"
+      />
     </>;
   } else {
     catalogContent = <div className="state-card"><h3>Nothing here just yet.</h3><p>Try another search or category to find your next favourite.</p><button className="button button-outline" onClick={() => { setSearch(''); setDistrict(''); setMunicipality(''); setParams(new URLSearchParams()); }}>Clear filters</button></div>;
@@ -228,6 +245,7 @@ function ProductDetail({ session }) {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [wishlisted, setWishlisted] = useState(false);
+  useDocumentTitle(product?.name || 'Product');
 
   useEffect(() => {
     request(`/api/v1/products/${id}`).then(({ product: row }) => setProduct(row)).catch((err) => setError(err.message));
@@ -269,7 +287,7 @@ function ProductDetail({ session }) {
     <div className="detail-layout">
       <div className="detail-image">{product.images?.[0] ? <img src={product.images[0]} alt={product.name} /> : <div className="image-placeholder"><span>SAJILO</span></div>}</div>
       <section className="detail-copy"><p className="eyebrow">{product.category}</p><h1>{product.name}</h1><p className="detail-price">{NPR.format(product.price)}</p><p className="detail-description">{product.description}</p><p className="product-location">{[product.location?.municipality, product.location?.district, product.location?.province].filter(Boolean).join(', ')}</p><p className={`availability ${product.stock > 0 ? '' : 'unavailable'}`}>{product.stock > 0 ? `${product.stock} available` : 'Currently unavailable'}</p>
-        <div className="purchase-row"><label className="qty-control">Quantity <input type="number" min="1" max={product.stock} value={quantity} onChange={(event) => setQuantity(Math.max(1, Math.min(product.stock || 1, Number(event.target.value))))} /></label><button disabled={product.stock <= 0} className="button button-outline" onClick={() => addItem('/api/v1/users/cart', { productId: product._id, quantity })}>Add to cart</button><button disabled={product.stock <= 0} className="button button-dark" onClick={buyNow}>Buy now</button><button className="button button-outline" onClick={() => addItem(`/api/v1/users/wishlist/${product._id}`, {})}>{wishlisted ? 'Saved' : 'Save for later'}</button></div>
+        <div className="purchase-row"><label className="qty-control">Quantity <input type="number" min="1" max={Math.min(product.stock || 1, 99)} value={quantity} onChange={(event) => setQuantity(Math.max(1, Math.min(product.stock || 1, 99, Number(event.target.value) || 1)))} /></label><button disabled={product.stock <= 0} className="button button-outline" onClick={() => addItem('/api/v1/users/cart', { productId: product._id, quantity })}>Add to cart</button><button disabled={product.stock <= 0} className="button button-dark" onClick={buyNow}>Buy now</button><button className="button button-outline" onClick={() => addItem(`/api/v1/users/wishlist/${product._id}`, {})}>{wishlisted ? 'Saved' : 'Save for later'}</button></div>
         {notice && <p role="status" className="inline-notice">{notice}</p>}
         <div className="seller-note"><span>SELLER</span><strong>{product.seller?.name || 'Independent seller'}</strong><p>Supporting local businesses across Nepal.</p></div>
       </section>
@@ -279,12 +297,14 @@ function ProductDetail({ session }) {
 
 function AuthPage({ mode, session }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
+  const [notice, setNotice] = useState(() => location.state?.notice || '');
   const [loading, setLoading] = useState(false);
   const [step, setStep] = useState('form'); // 'form' | 'otp'
   const [regData, setRegData] = useState({ name: '', email: '', password: '', role: 'buyer' });
   const [otp, setOtp] = useState('');
+  useDocumentTitle(mode === 'login' ? 'Log in' : 'Create account');
 
   const submit = async (event) => {
     event.preventDefault();
@@ -406,7 +426,8 @@ function AuthPage({ mode, session }) {
             </label>
           </>}
           <Field label="Email address" name="email" type="email" defaultValue={regData.email} autoComplete="email" required />
-          <Field label="Password" name="password" type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} minLength="6" required />
+          <Field label="Password" name="password" type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} minLength="8" required />
+          {mode === 'login' && <p className="auth-switch" style={{ marginTop: 0 }}><Link to="/forgot-password">Forgot your password?</Link></p>}
           <button className="button button-dark full-width" disabled={loading}>
             {loading ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Continue & Send Verification Code'}
           </button>
@@ -424,6 +445,90 @@ function AuthPage({ mode, session }) {
   </main>;
 }
 
+function ForgotPassword() {
+  const navigate = useNavigate();
+  const [step, setStep] = useState('email'); // 'email' | 'reset'
+  const [email, setEmail] = useState('');
+  const [otp, setOtp] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [loading, setLoading] = useState(false);
+  useDocumentTitle('Reset password');
+
+  const requestCode = async (event) => {
+    event.preventDefault();
+    setLoading(true);
+    setError('');
+    const values = Object.fromEntries(new FormData(event.currentTarget).entries());
+    const value = String(values.email || '').trim();
+    try {
+      const res = await request('/api/v1/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email: value }) });
+      setEmail(value);
+      setStep('reset');
+      setNotice(res.devOtp ? `${res.message} (development code: ${res.devOtp})` : res.message);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const submitReset = async (event) => {
+    event.preventDefault();
+    setLoading(true);
+    setError('');
+    try {
+      const res = await request('/api/v1/auth/reset-password', {
+        method: 'POST',
+        body: JSON.stringify({ email, otp: otp.trim(), newPassword })
+      });
+      navigate('/login', { state: { notice: res.message || 'Your password was updated. Sign in with your new password.' } });
+    } catch (err) {
+      setError(err.message);
+      setLoading(false);
+    }
+  };
+
+  return <main className="auth-page">
+    <div className="auth-visual">
+      <p className="eyebrow">SAJILO PASAL</p>
+      <h1>Back in.<br /><em>Easily.</em></h1>
+      <p>Reset your password with a code sent to your email.</p>
+    </div>
+    <section className="auth-panel">
+      <Link to="/login" className="back-link">← Back to sign in</Link>
+      <p className="eyebrow">ACCOUNT RECOVERY</p>
+      <h2>{step === 'email' ? 'Forgot your password?' : 'Choose a new password.'}</h2>
+      <p className="muted">
+        {step === 'email'
+          ? 'Enter the email on your account and we will send a reset code.'
+          : `Enter the 6-digit code sent to ${email} and pick a new password.`}
+      </p>
+
+      {notice && <p className="success-message" role="status" style={{ marginBottom: 16 }}>{notice}</p>}
+      {error && <p className="form-error" role="alert" style={{ marginBottom: 16 }}>{error}</p>}
+
+      {step === 'email' ? (
+        <form onSubmit={requestCode} className="form-stack">
+          <Field label="Email address" name="email" type="email" autoComplete="email" required />
+          <button className="button button-dark full-width" disabled={loading}>{loading ? 'Sending…' : 'Send reset code'}</button>
+        </form>
+      ) : (
+        <form onSubmit={submitReset} className="form-stack">
+          <label className="field">
+            <span>Reset code</span>
+            <input name="otp" type="text" inputMode="numeric" maxLength={6} placeholder="e.g. 123456" value={otp} onChange={(event) => setOtp(event.target.value)} required />
+          </label>
+          <Field label="New password (at least 8 characters)" name="newPassword" type="password" minLength="8" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} required />
+          <button className="button button-dark full-width" disabled={loading || !otp.trim() || newPassword.length < 8}>{loading ? 'Updating…' : 'Update password'}</button>
+          <button type="button" className="button button-quiet" disabled={loading} onClick={() => { setStep('email'); setError(''); setNotice(''); }}>← Use a different email</button>
+        </form>
+      )}
+    </section>
+  </main>;
+}
+
 function Field({ label, name, type = 'text', required = false, ...props }) {
   return <label className="field"><span>{label}</span><input name={name} type={type} required={required} {...props} /></label>;
 }
@@ -434,12 +539,55 @@ function Protected({ session, roles, children }) {
   return children;
 }
 
+function QuantityInput({ value, max, onCommit, label }) {
+  const [draft, setDraft] = useState(String(value));
+  useEffect(() => { setDraft(String(value)); }, [value]);
+  const commit = () => {
+    const parsed = Number.parseInt(draft, 10);
+    if (!Number.isFinite(parsed) || parsed < 1) {
+      setDraft(String(value));
+      return;
+    }
+    const clamped = Math.max(1, Math.min(parsed, max));
+    setDraft(String(clamped));
+    if (clamped !== value) onCommit(clamped);
+  };
+  return <input
+    type="number"
+    min="1"
+    max={max}
+    value={draft}
+    aria-label={label}
+    onChange={(event) => setDraft(event.target.value)}
+    onBlur={commit}
+    onKeyDown={(event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        commit();
+      }
+    }}
+  />;
+}
+
 function Cart({ session }) {
   const [cart, setCart] = useState([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const total = useMemo(() => cart.reduce((sum, item) => sum + (item.product?.price || 0) * item.quantity, 0), [cart]);
-  const refresh = () => request('/api/v1/users/cart').then(({ cart: rows = [] }) => setCart(rows)).catch((err) => setError(err.message)).finally(() => setLoading(false));
+  useDocumentTitle('Your bag');
+
+  const refresh = async () => {
+    try {
+      const { cart: rows = [] } = await request('/api/v1/users/cart');
+      setCart(rows);
+      setError('');
+      session.setCartCount(rows.reduce((sum, item) => sum + item.quantity, 0));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
   useEffect(() => { void refresh(); }, []);
 
   const update = async (id, quantity) => {
@@ -447,12 +595,10 @@ function Cart({ session }) {
       if (quantity < 1) await request(`/api/v1/users/cart/${id}`, { method: 'DELETE' });
       else await request(`/api/v1/users/cart/${id}`, { method: 'PUT', body: JSON.stringify({ quantity }) });
       await refresh();
-      const data = await request('/api/v1/users/cart');
-      session.setCartCount(data.cart.reduce((sum, item) => sum + item.quantity, 0));
     } catch (err) { setError(err.message); }
   };
   if (loading) return <main className="page-wrap"><div className="loading-state">Loading your bag…</div></main>;
-  return <main className="page-wrap"><p className="eyebrow">YOUR BAG</p><h1 className="page-title">A good choice.</h1>{error && <p className="form-error">{error}</p>}{cart.length ? <div className="cart-layout"><div className="cart-list">{cart.map(({ product, quantity }) => product && <article className="cart-item" key={product._id}><Link to={`/products/${product._id}`} className="cart-thumbnail">{product.images?.[0] ? <img src={product.images[0]} alt="" /> : 'SAJILO'}</Link><div className="cart-item-info"><Link to={`/products/${product._id}`}><strong>{product.name}</strong></Link><span>{NPR.format(product.price)}</span><span className={product.stock < quantity ? 'form-error' : 'muted'}>{product.stock < quantity ? 'Please adjust quantity; stock changed.' : `${product.stock} available`}</span></div><label className="cart-quantity"><span className="visually-hidden">Quantity for {product.name}</span><input type="number" min="0" max={product.stock} value={quantity} onChange={(event) => update(product._id, Number(event.target.value))} /></label><button className="remove-button" onClick={() => update(product._id, 0)}>Remove</button></article>)}</div><aside className="summary-box"><h2>Order summary</h2><div><span>Subtotal</span><strong>{NPR.format(total)}</strong></div><div><span>Shipping</span><span>Calculated at checkout</span></div><Link className="button button-dark full-width" to="/checkout">Continue to checkout</Link><Link to="/" className="text-link">Keep exploring</Link></aside></div> : <div className="state-card"><h2>Your bag is taking a breather.</h2><p>Find something made with care and bring it home.</p><Link to="/" className="button button-dark">Explore the collection</Link></div>}</main>;
+  return <main className="page-wrap"><p className="eyebrow">YOUR BAG</p><h1 className="page-title">A good choice.</h1>{error && <p className="form-error">{error}</p>}{cart.length ? <div className="cart-layout"><div className="cart-list">{cart.map(({ product, quantity }) => product && <article className="cart-item" key={product._id}><Link to={`/products/${product._id}`} className="cart-thumbnail">{product.images?.[0] ? <img src={product.images[0]} alt="" /> : 'SAJILO'}</Link><div className="cart-item-info"><Link to={`/products/${product._id}`}><strong>{product.name}</strong></Link><span>{NPR.format(product.price)}</span><span className={product.stock < quantity ? 'form-error' : 'muted'}>{product.stock < quantity ? 'Please adjust quantity; stock changed.' : `${product.stock} available`}</span></div><label className="cart-quantity"><span className="visually-hidden">Quantity for {product.name}</span><QuantityInput value={quantity} max={Math.min(product.stock || 1, 99)} label={`Quantity for ${product.name}`} onCommit={(next) => update(product._id, next)} /></label><button className="remove-button" onClick={() => update(product._id, 0)}>Remove</button></article>)}</div><aside className="summary-box"><h2>Order summary</h2><div><span>Subtotal</span><strong>{NPR.format(total)}</strong></div><div><span>Shipping</span><span>Calculated at checkout</span></div><Link className="button button-dark full-width" to="/checkout">Continue to checkout</Link><Link to="/" className="text-link">Keep exploring</Link></aside></div> : <div className="state-card"><h2>Your bag is taking a breather.</h2><p>Find something made with care and bring it home.</p><Link to="/" className="button button-dark">Explore the collection</Link></div>}</main>;
 }
 
 function Checkout() {
@@ -461,6 +607,10 @@ function Checkout() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [provinces, setProvinces] = useState([]);
+  // One key per checkout page visit; retries reuse it so the server can
+  // reject duplicate submissions of the same checkout.
+  const checkoutKey = useRef(createCheckoutKey());
+  useDocumentTitle('Checkout');
   useEffect(() => {
     request('/api/v1/users/cart').then(({ cart: rows = [] }) => setCart(rows.filter((item) => item.product))).catch((err) => setError(err.message));
     request('/api/v1/products/locations').then(({ provinces: rows = [] }) => setProvinces(rows)).catch((err) => setError(err.message));
@@ -494,7 +644,7 @@ function Checkout() {
     setLoading(true); setError('');
     const values = Object.fromEntries(new FormData(event.currentTarget).entries());
     try {
-      const { checkoutId } = await request('/api/v1/orders', { method: 'POST', body: JSON.stringify({ items: cart.map(({ product, quantity }) => ({ productId: product._id, quantity })), shippingAddress: values, paymentMethod }) });
+      const { checkoutId } = await request('/api/v1/orders', { method: 'POST', body: JSON.stringify({ items: cart.map(({ product, quantity }) => ({ productId: product._id, quantity })), shippingAddress: values, paymentMethod, checkoutId: checkoutKey.current }) });
       window.location.assign(`/checkout/payments?checkoutId=${checkoutId}&status=${paymentMethod === 'esewa' ? 'ready' : 'created'}`);
     } catch (err) { setError(err.message); setLoading(false); }
   };
@@ -511,6 +661,7 @@ function CheckoutPayments() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [payingOrderId, setPayingOrderId] = useState('');
+  useDocumentTitle('Seller payments');
   const load = () => {
     if (!checkoutId) {
       setError('Checkout ID is missing');
@@ -563,15 +714,24 @@ function CheckoutPayments() {
 
 function Orders() {
   const [orders, setOrders] = useState([]);
+  const [page, setPage] = useState(1);
+  const [pages, setPages] = useState(1);
+  const [total, setTotal] = useState(0);
   const [error, setError] = useState('');
-  useEffect(() => { request('/api/v1/orders/my-orders').then(({ orders: rows = [] }) => setOrders(rows)).catch((err) => setError(err.message)); }, []);
-  return <main className="page-wrap"><p className="eyebrow">YOUR HISTORY</p><h1 className="page-title">Orders.</h1>{error && <p className="form-error">{error}</p>}{orders.length ? <div className="order-list">{orders.map((order) => <Link to={`/orders/${order._id}`} className="order-row" key={order._id}><div><span className="eyebrow">ORDER PLACED</span><strong>{new Date(order.createdAt).toLocaleDateString()}</strong><span>{order.items.length} items · {NPR.format(order.total)}</span></div><span className={`status-pill status-${order.orderStatus.toLowerCase()}`}>{order.orderStatus}</span><span className="payment-state">{order.paymentStatus}</span><span aria-hidden="true">→</span></Link>)}</div> : <div className="state-card"><h2>No orders yet.</h2><p>Your next great local find is waiting.</p><Link to="/" className="button button-dark">Explore products</Link></div>}</main>;
+  useDocumentTitle('My orders');
+  useEffect(() => {
+    request(`/api/v1/orders/my-orders?page=${page}`)
+      .then((data) => { setOrders(data.orders || []); setPages(data.pages || 1); setTotal(data.total || 0); })
+      .catch((err) => setError(err.message));
+  }, [page]);
+  return <main className="page-wrap"><p className="eyebrow">YOUR HISTORY</p><h1 className="page-title">Orders.</h1>{error && <p className="form-error">{error}</p>}{total ? <><div className="order-list">{orders.map((order) => <Link to={`/orders/${order._id}`} className="order-row" key={order._id}><div><span className="eyebrow">ORDER PLACED</span><strong>{new Date(order.createdAt).toLocaleDateString()}</strong><span>{order.items.length} items · {NPR.format(order.total)}</span></div><span className={`status-pill status-${order.orderStatus.toLowerCase()}`}>{order.orderStatus}</span><span className="payment-state">{order.paymentStatus}</span><span aria-hidden="true">→</span></Link>)}</div><Pager page={page} pages={pages} onPage={setPage} label="Order pages" /></> : <div className="state-card"><h2>No orders yet.</h2><p>Your next great local find is waiting.</p><Link to="/" className="button button-dark">Explore products</Link></div>}</main>;
 }
 
 function OrderDetail() {
   const { id } = useParams();
   const [order, setOrder] = useState(null);
   const [error, setError] = useState('');
+  useDocumentTitle('Order details');
   useEffect(() => { request(`/api/v1/orders/${id}`).then(({ order: row }) => setOrder(row)).catch((err) => setError(err.message)); }, [id]);
   if (error) return <main className="page-wrap"><div className="state-card"><h2>Order not found</h2><p>{error}</p></div></main>;
   if (!order) return <main className="page-wrap"><div className="loading-state">Loading order…</div></main>;
@@ -583,6 +743,7 @@ function Profile({ session }) {
   const [user, setUser] = useState(session.user);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  useDocumentTitle('Your profile');
   const save = async (event) => {
     event.preventDefault();
     const values = Object.fromEntries(new FormData(event.currentTarget).entries());
@@ -613,59 +774,40 @@ function Profile({ session }) {
 
 function Wishlist({ session }) {
   const [items, setItems] = useState([]);
-  useEffect(() => { request('/api/v1/users/wishlist').then(({ wishlist = [] }) => setItems(wishlist)).catch(() => setItems([])); }, []);
-  const remove = async (id) => {
-    await request(`/api/v1/users/wishlist/${id}`, { method: 'POST', body: JSON.stringify({}) });
+  const [notice, setNotice] = useState('');
+  useDocumentTitle('Saved items');
+  const reload = async () => {
     const { wishlist = [] } = await request('/api/v1/users/wishlist');
     setItems(wishlist);
   };
-  return <main className="page-wrap"><p className="eyebrow">YOUR SAVED FINDS</p><h1 className="page-title">Wishlist.</h1>{items.length ? <div className="product-grid">{items.map((product) => <ProductCard key={product._id} product={product} onRemove={remove} onAdd={async () => { await request('/api/v1/users/cart', { method: 'POST', body: JSON.stringify({ productId: product._id }) }); session.setCartCount((count) => count + 1); }} />)}</div> : <div className="state-card"><h2>Keep your favourites close.</h2><Link to="/" className="button button-dark">Explore the collection</Link></div>}</main>;
-}
-
-function SellerDashboardLegacy() {
-  const [products, setProducts] = useState([]);
-  const [orders, setOrders] = useState([]);
-  const [error, setError] = useState('');
-  const [editing, setEditing] = useState(null);
-  const [saved, setSaved] = useState('');
-  const [imageUrl, setImageUrl] = useState('');
-  const [uploading, setUploading] = useState(false);
-  const load = () => Promise.all([request('/api/v1/products/seller/my-products'), request('/api/v1/orders/seller')]).then(([productData, orderData]) => { setProducts(productData.products); setOrders(orderData.orders); }).catch((err) => setError(err.message));
-  useEffect(() => { void load(); }, []);
-  const saveProduct = async (event) => {
-    event.preventDefault();
-    const raw = Object.fromEntries(new FormData(event.currentTarget).entries());
-    const body = { ...raw, price: Number(raw.price), stock: Number(raw.stock), images: raw.image ? [raw.image] : [] };
+  useEffect(() => { reload().catch(() => setItems([])); }, []);
+  const remove = async (id) => {
     try {
-      await request(editing ? `/api/v1/products/${editing._id}` : '/api/v1/products', { method: editing ? 'PUT' : 'POST', body: JSON.stringify(body) });
-      setEditing(null); setSaved('Product saved.'); await load();
-    } catch (err) { setError(err.message); }
+      await request(`/api/v1/users/wishlist/${id}`, { method: 'POST', body: JSON.stringify({}) });
+      await reload();
+    } catch (err) { setNotice(err.message); }
   };
-  const sales = orders.reduce((sum, order) => {
-    if (order.paymentStatus !== 'PAID' && !(order.paymentMethod === 'cash_on_delivery' && order.orderStatus === 'DELIVERED')) return sum;
-    return sum + order.items.reduce((itemSum, item) => itemSum + item.subtotal, 0);
-  }, 0);
-  const uploadImage = async (file) => {
-    if (!file) return;
-    const body = new FormData();
-    body.append('image', file);
-    setUploading(true);
-    setError('');
+  const addToCart = async (product, goToCheckout = false) => {
     try {
-      const { image } = await request('/api/v1/products/images', { method: 'POST', body });
-      setImageUrl(image.url);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setUploading(false);
-    }
+      await request('/api/v1/users/cart', { method: 'POST', body: JSON.stringify({ productId: product._id }) });
+      session.setCartCount((count) => count + 1);
+      if (goToCheckout) window.location.assign('/checkout');
+      else setNotice(`${product.name} added to your bag.`);
+    } catch (err) { setNotice(err.message); }
   };
-  return <main className="dashboard page-wrap"><div className="dashboard-heading"><div><p className="eyebrow">SELLER STUDIO</p><h1 className="page-title">Your business, at a glance.</h1></div><a href="#product-form" className="button button-dark">Add a product</a></div>{error && <p className="form-error">{error}</p>}{saved && <p className="success-message">{saved}</p>}<div className="stat-grid"><Stat label="Active products" value={products.filter((product) => product.isActive).length} /><Stat label="Orders" value={orders.length} /><Stat label="Revenue in orders" value={NPR.format(sales)} /></div><section className="dashboard-section" id="product-form"><h2>{editing ? 'Edit product' : 'List a product'}</h2><form onSubmit={saveProduct} className="seller-product-form"><Field label="Product name" name="name" defaultValue={editing?.name || ''} required /><Field label="Category" name="category" defaultValue={editing?.category || ''} required /><Field label="Price (NPR)" name="price" type="number" min="0" step="1" defaultValue={editing?.price || ''} required /><Field label="Stock" name="stock" type="number" min="0" step="1" defaultValue={editing?.stock ?? ''} required /><Field label="Image URL" name="image" type="url" defaultValue={editing?.images?.[0] || ''} /><label className="field wide-field"><span>Description</span><textarea name="description" rows="3" defaultValue={editing?.description || ''} required /></label><div className="form-actions"><button className="button button-dark">{editing ? 'Save changes' : 'Publish product'}</button>{editing && <button type="button" className="button button-outline" onClick={() => setEditing(null)}>Cancel</button>}</div></form></section><section className="dashboard-section"><h2>Your products</h2>{products.length ? <div className="table-wrap"><table><thead><tr><th>Product</th><th>Price</th><th>Stock</th><th>Status</th><th>Actions</th></tr></thead><tbody>{products.map((product) => <tr key={product._id}><td>{product.name}</td><td>{NPR.format(product.price)}</td><td>{product.stock}</td><td>{product.isActive ? 'Active' : 'Hidden'}</td><td className="table-actions"><button onClick={() => { setEditing(product); document.getElementById('product-form').scrollIntoView({ behavior: 'smooth' }); }}>Edit</button><button onClick={async () => { await request(`/api/v1/products/${product._id}`, { method: 'DELETE' }); load(); }}>Remove</button></td></tr>)}</tbody></table></div> : <p className="muted">Your first listing starts here.</p>}</section><section className="dashboard-section"><h2>Orders containing your products</h2>{orders.length ? <div className="order-list">{orders.map((order) => <div className="order-row" key={order._id}><div><strong>#{order._id.slice(-8)}</strong><span>{order.items.filter((item) => String(item.seller) === String(order.items.find((row) => String(row.seller) === String(item.seller))?.seller)).map((item) => item.productName).join(', ')}</span></div><span className="status-pill">{order.orderStatus}</span><label><span className="visually-hidden">Update status</span><select value={order.orderStatus} onChange={(event) => updateOrder(order._id, event.target.value)}><option>PENDING</option><option>CONFIRMED</option><option>PROCESSING</option><option>SHIPPED</option><option>DELIVERED</option><option>CANCELLED</option></select></label></div>)}</div> : <p className="muted">New orders will appear here.</p>}</section></main>;
+  return <main className="page-wrap"><p className="eyebrow">YOUR SAVED FINDS</p><h1 className="page-title">Wishlist.</h1>{notice && <p role="status" className="inline-notice">{notice}</p>}{items.length ? <div className="product-grid">{items.map((product) => <ProductCard key={product._id} product={product} onRemove={remove} onAdd={(item) => addToCart(item)} onBuyNow={(item) => addToCart(item, true)} />)}</div> : <div className="state-card"><h2>Keep your favourites close.</h2><Link to="/" className="button button-dark">Explore the collection</Link></div>}</main>;
 }
 
 function SellerDashboard() {
   const [products, setProducts] = useState([]);
+  const [productPage, setProductPage] = useState(1);
+  const [productPages, setProductPages] = useState(1);
+  const [activeProducts, setActiveProducts] = useState(0);
   const [orders, setOrders] = useState([]);
+  const [orderPage, setOrderPage] = useState(1);
+  const [orderPages, setOrderPages] = useState(1);
+  const [orderTotal, setOrderTotal] = useState(0);
+  const [salesTotal, setSalesTotal] = useState(0);
   const [categories, setCategories] = useState([]);
   const [provinces, setProvinces] = useState([]);
   const [error, setError] = useState('');
@@ -675,16 +817,22 @@ function SellerDashboard() {
   const [esewaSettings, setEsewaSettings] = useState({ connected: false, phoneNumber: '', merchantCode: '' });
   const [esewaSecret, setEsewaSecret] = useState('');
   const [paymentMessage, setPaymentMessage] = useState('');
+  useDocumentTitle('Seller studio');
 
-  const load = () => Promise.all([
-    request('/api/v1/products/seller/my-products'),
-    request('/api/v1/orders/seller')
-  ]).then(([productData, orderData]) => {
-    setProducts(productData.products);
-    setOrders(orderData.orders);
-  }).catch((err) => setError(err.message));
+  const loadProducts = (page) => request(`/api/v1/products/seller/my-products?page=${page}`).then((data) => {
+    setProducts(data.products || []);
+    setProductPages(data.pages || 1);
+    setActiveProducts(data.activeCount || 0);
+  });
+  const loadOrders = (page) => request(`/api/v1/orders/seller?page=${page}`).then((data) => {
+    setOrders(data.orders || []);
+    setOrderPages(data.pages || 1);
+    setOrderTotal(data.total || 0);
+    setSalesTotal(data.salesTotal || 0);
+  });
 
-  useEffect(() => { void load(); }, []);
+  useEffect(() => { loadProducts(productPage).catch((err) => setError(err.message)); }, [productPage]);
+  useEffect(() => { loadOrders(orderPage).catch((err) => setError(err.message)); }, [orderPage]);
   useEffect(() => {
     request('/api/v1/products/categories').then(({ categories: rows = [] }) => setCategories(rows)).catch((err) => setError(err.message));
     request('/api/v1/products/locations').then(({ provinces: rows = [] }) => setProvinces(rows)).catch((err) => setError(err.message));
@@ -748,7 +896,7 @@ function SellerDashboard() {
       });
       setEditing(null);
       setImageUrl('');
-      await load();
+      await loadProducts(productPage);
     } catch (err) {
       setError(err.message);
     }
@@ -776,22 +924,16 @@ function SellerDashboard() {
         method: 'PATCH',
         body: JSON.stringify({ fulfillmentStatus })
       });
-      await load();
+      await loadOrders(orderPage);
     } catch (err) {
       setError(err.message);
     }
   };
 
-  const sales = orders.reduce((sum, order) => {
-    if (order.paymentStatus !== 'PAID'
-      && !(order.paymentMethod === 'cash_on_delivery' && order.orderStatus === 'DELIVERED')) return sum;
-    return sum + order.items.reduce((itemSum, item) => itemSum + item.subtotal, 0);
-  }, 0);
-
   return <main className="dashboard page-wrap">
     <div className="dashboard-heading"><div><p className="eyebrow">SELLER STUDIO</p><h1 className="page-title">Your business, at a glance.</h1></div><a href="#product-form" className="button button-dark">Add a product</a></div>
     {error && <p className="form-error" role="alert">{error}</p>}
-    <div className="stat-grid"><Stat label="Active products" value={products.filter((product) => product.isActive).length} /><Stat label="Orders" value={orders.length} /><Stat label="Paid sales" value={NPR.format(sales)} /></div>
+    <div className="stat-grid"><Stat label="Active products" value={activeProducts} /><Stat label="Orders" value={orderTotal} /><Stat label="Paid sales" value={NPR.format(salesTotal)} /></div>
     <section className="dashboard-section payment-connection">
       <h2>Seller payment account</h2>
       <p className="muted">Add your eSewa number and merchant code. Automatic checkout also needs the API secret issued by eSewa for your merchant account; it is encrypted before storage and is never shown again.</p>
@@ -833,7 +975,7 @@ function SellerDashboard() {
     </section>
     <section className="dashboard-section">
       <h2>Your products</h2>
-      {products.length ? <div className="table-wrap"><table><thead><tr><th>Product</th><th>Price</th><th>Stock</th><th>Status</th><th>Actions</th></tr></thead><tbody>{products.map((product) => <tr key={product._id}><td>{product.name}</td><td>{NPR.format(product.price)}</td><td>{product.stock}</td><td>{product.isActive ? 'Active' : 'Hidden'}</td><td className="table-actions"><button onClick={() => { setEditing(product); setImageUrl(product.images?.[0] || ''); document.getElementById('product-form').scrollIntoView({ behavior: 'smooth' }); }}>Edit</button><button onClick={async () => { try { await request(`/api/v1/products/${product._id}`, { method: 'DELETE' }); await load(); } catch (err) { setError(err.message); } }}>Remove</button></td></tr>)}</tbody></table></div> : <p className="muted">Your first listing starts here.</p>}
+      {products.length ? <><div className="table-wrap"><table><thead><tr><th>Product</th><th>Price</th><th>Stock</th><th>Status</th><th>Actions</th></tr></thead><tbody>{products.map((product) => <tr key={product._id}><td>{product.name}</td><td>{NPR.format(product.price)}</td><td>{product.stock}</td><td>{product.isActive ? 'Active' : 'Hidden'}</td><td className="table-actions"><button onClick={() => { setEditing(product); setImageUrl(product.images?.[0] || ''); document.getElementById('product-form').scrollIntoView({ behavior: 'smooth' }); }}>Edit</button><button onClick={async () => { try { await request(`/api/v1/products/${product._id}`, { method: 'DELETE' }); await loadProducts(productPage); } catch (err) { setError(err.message); } }}>Remove</button></td></tr>)}</tbody></table></div><Pager page={productPage} pages={productPages} onPage={setProductPage} label="Product pages" /></> : <p className="muted">Your first listing starts here.</p>}
     </section>
     <section className="dashboard-section">
       <h2>Orders containing your products</h2>
@@ -942,6 +1084,7 @@ function SellerDashboard() {
           );
         })}
       </div> : <p className="muted">New orders will appear here.</p>}
+      <Pager page={orderPage} pages={orderPages} onPage={setOrderPage} label="Seller order pages" />
     </section>
   </main>;
 }
@@ -949,26 +1092,33 @@ function SellerDashboard() {
 function AdminDashboard() {
   const [stats, setStats] = useState(null);
   const [users, setUsers] = useState([]);
+  const [userPage, setUserPage] = useState(1);
+  const [userPages, setUserPages] = useState(1);
   const [orders, setOrders] = useState([]);
+  const [orderPage, setOrderPage] = useState(1);
+  const [orderPages, setOrderPages] = useState(1);
   const [error, setError] = useState('');
-  const load = () => Promise.all([request('/api/v1/admin/dashboard'), request('/api/v1/admin/users'), request('/api/v1/admin/orders')]).then(([statData, userData, orderData]) => { setStats(statData.stats); setUsers(userData.users); setOrders(orderData.orders); }).catch((err) => setError(err.message));
-  useEffect(() => { void load(); }, []);
-  const updateUser = async (id, values) => { try { await request(`/api/v1/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify(values) }); await load(); } catch (err) { setError(err.message); } };
-  return <main className="dashboard page-wrap"><p className="eyebrow">PLATFORM ADMIN</p><h1 className="page-title">The bigger picture.</h1>{error && <p className="form-error">{error}</p>}{stats && <div className="stat-grid"><Stat label="Users" value={stats.totalUsers} /><Stat label="Buyers" value={stats.buyers} /><Stat label="Sellers" value={stats.sellers} /><Stat label="Products" value={stats.totalProducts} /><Stat label="Orders" value={stats.totalOrders} /><Stat label="Order value" value={NPR.format(stats.revenue)} /></div>}<section className="dashboard-section"><h2>People on the platform</h2><div className="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Access</th><th>Actions</th></tr></thead><tbody>{users.map((user) => <tr key={user._id}><td>{user.name}</td><td>{user.email}</td><td><select value={user.role} aria-label={`Role for ${user.name}`} onChange={(event) => updateUser(user._id, { role: event.target.value })}><option value="buyer">Buyer</option><option value="seller">Seller</option><option value="admin">Admin</option></select></td><td>{user.isActive === false ? 'Suspended' : 'Active'}</td><td><button onClick={() => updateUser(user._id, { isActive: user.isActive === false })}>{user.isActive === false ? 'Restore' : 'Suspend'}</button></td></tr>)}</tbody></table></div></section><section className="dashboard-section"><h2>Recent orders</h2><div className="order-list">{orders.slice(0, 20).map((order) => <Link to={`/orders/${order._id}`} className="order-row" key={order._id}><div><strong>#{order._id.slice(-8)}</strong><span>{new Date(order.createdAt).toLocaleDateString()}</span></div><span>{order.paymentStatus}</span><span>{order.orderStatus}</span><strong>{NPR.format(order.total)}</strong></Link>)}</div></section></main>;
+  useDocumentTitle('Admin');
+  const loadUsers = (page) => request(`/api/v1/admin/users?page=${page}`).then((data) => { setUsers(data.users || []); setUserPages(data.pages || 1); });
+  const loadOrders = (page) => request(`/api/v1/admin/orders?page=${page}`).then((data) => { setOrders(data.orders || []); setOrderPages(data.pages || 1); });
+  useEffect(() => { request('/api/v1/admin/dashboard').then(({ stats: rows }) => setStats(rows)).catch((err) => setError(err.message)); }, []);
+  useEffect(() => { loadUsers(userPage).catch((err) => setError(err.message)); }, [userPage]);
+  useEffect(() => { loadOrders(orderPage).catch((err) => setError(err.message)); }, [orderPage]);
+  const updateUser = async (id, values) => { try { await request(`/api/v1/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify(values) }); await loadUsers(userPage); } catch (err) { setError(err.message); } };
+  return <main className="dashboard page-wrap"><p className="eyebrow">PLATFORM ADMIN</p><h1 className="page-title">The bigger picture.</h1>{error && <p className="form-error">{error}</p>}{stats && <div className="stat-grid"><Stat label="Users" value={stats.totalUsers} /><Stat label="Buyers" value={stats.buyers} /><Stat label="Sellers" value={stats.sellers} /><Stat label="Products" value={stats.totalProducts} /><Stat label="Orders" value={stats.totalOrders} /><Stat label="Order value" value={NPR.format(stats.revenue)} /></div>}<section className="dashboard-section"><h2>People on the platform</h2><div className="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Access</th><th>Actions</th></tr></thead><tbody>{users.map((user) => <tr key={user._id}><td>{user.name}</td><td>{user.email}</td><td><select value={user.role} aria-label={`Role for ${user.name}`} onChange={(event) => updateUser(user._id, { role: event.target.value })}><option value="buyer">Buyer</option><option value="seller">Seller</option><option value="admin">Admin</option></select></td><td>{user.isActive === false ? 'Suspended' : 'Active'}</td><td><button onClick={() => updateUser(user._id, { isActive: user.isActive === false })}>{user.isActive === false ? 'Restore' : 'Suspend'}</button></td></tr>)}</tbody></table></div><Pager page={userPage} pages={userPages} onPage={setUserPage} label="User pages" /></section><section className="dashboard-section"><h2>Recent orders</h2><div className="order-list">{orders.map((order) => <Link to={`/orders/${order._id}`} className="order-row" key={order._id}><div><strong>#{order._id.slice(-8)}</strong><span>{new Date(order.createdAt).toLocaleDateString()}</span></div><span>{order.paymentStatus}</span><span>{order.orderStatus}</span><strong>{NPR.format(order.total)}</strong></Link>)}</div><Pager page={orderPage} pages={orderPages} onPage={setOrderPage} label="Order pages" /></section></main>;
 }
 
 function AdminCatalog() {
   const [products, setProducts] = useState([]);
+  const [productPage, setProductPage] = useState(1);
+  const [productPages, setProductPages] = useState(1);
   const [categories, setCategories] = useState([]);
   const [error, setError] = useState('');
-  const load = () => Promise.all([
-    request('/api/v1/admin/products'),
-    request('/api/v1/admin/categories')
-  ]).then(([productData, categoryData]) => {
-    setProducts(productData.products);
-    setCategories(categoryData.categories);
-  }).catch((err) => setError(err.message));
-  useEffect(() => { void load(); }, []);
+  useDocumentTitle('Catalog admin');
+  const loadProducts = (page) => request(`/api/v1/admin/products?page=${page}`).then((data) => { setProducts(data.products || []); setProductPages(data.pages || 1); });
+  const loadCategories = () => request('/api/v1/admin/categories').then((data) => setCategories(data.categories || []));
+  useEffect(() => { loadProducts(productPage).catch((err) => setError(err.message)); }, [productPage]);
+  useEffect(() => { loadCategories().catch((err) => setError(err.message)); }, []);
 
   const addCategory = async (event) => {
     event.preventDefault();
@@ -977,7 +1127,7 @@ function AdminCatalog() {
     try {
       await request('/api/v1/admin/categories', { method: 'POST', body: JSON.stringify({ name }) });
       form.reset();
-      await load();
+      await loadCategories();
       setError('');
     } catch (err) { setError(err.message); }
   };
@@ -985,14 +1135,14 @@ function AdminCatalog() {
   const setProductVisibility = async (product, isActive) => {
     try {
       await request(`/api/v1/admin/products/${product._id}`, { method: 'PATCH', body: JSON.stringify({ isActive }) });
-      await load();
+      await loadProducts(productPage);
     } catch (err) { setError(err.message); }
   };
 
   const setCategoryVisibility = async (category, isActive) => {
     try {
       await request(`/api/v1/admin/categories/${category._id}`, { method: 'PATCH', body: JSON.stringify({ isActive }) });
-      await load();
+      await loadCategories();
     } catch (err) { setError(err.message); }
   };
 
@@ -1007,8 +1157,18 @@ function AdminCatalog() {
     <section className="dashboard-section">
       <h2>Products</h2>
       <div className="table-wrap"><table><thead><tr><th>Product</th><th>Seller</th><th>Category</th><th>Price</th><th>Stock</th><th>Status</th><th>Action</th></tr></thead><tbody>{products.map((product) => <tr key={product._id}><td>{product.name}</td><td>{product.seller?.name || '—'}</td><td>{product.category}</td><td>{NPR.format(product.price)}</td><td>{product.stock}</td><td>{product.isActive ? 'Active' : 'Hidden'}</td><td><button onClick={() => setProductVisibility(product, !product.isActive)}>{product.isActive ? 'Hide' : 'Restore'}</button></td></tr>)}</tbody></table></div>
+      <Pager page={productPage} pages={productPages} onPage={setProductPage} label="Product pages" />
     </section>
   </main>;
+}
+
+function Pager({ page, pages, onPage, label = 'Pages' }) {
+  if (!pages || pages <= 1) return null;
+  return <nav className="pagination" aria-label={label}>
+    <button className="button button-outline" disabled={page <= 1} onClick={() => onPage(page - 1)}>Previous</button>
+    <span>Page {page} of {pages}</span>
+    <button className="button button-outline" disabled={page >= pages} onClick={() => onPage(page + 1)}>Next</button>
+  </nav>;
 }
 
 function Stat({ label, value }) { return <div className="stat-card"><span>{label}</span><strong>{value}</strong></div>; }
@@ -1019,6 +1179,7 @@ function PaymentResult() {
   const status = params.get('status');
   const [order, setOrder] = useState(null);
   const [error, setError] = useState('');
+  useDocumentTitle('Payment status');
   useEffect(() => { if (orderId) request(`/api/v1/orders/${orderId}`).then(({ order: row }) => setOrder(row)).catch((err) => setError(err.message)); }, [orderId]);
   const paid = order?.paymentStatus === 'PAID';
   return <main className="page-wrap result-page"><p className="eyebrow">{paid ? 'PAYMENT COMPLETE' : status === 'created' ? 'ORDER RECEIVED' : 'PAYMENT UPDATE'}</p><h1 className="page-title">{paid ? 'That’s all yours.' : status === 'created' ? 'Order placed.' : 'We’re checking your payment.'}</h1><p className="muted">{paid ? 'Your eSewa payment is verified and your order is confirmed.' : status === 'created' ? 'Your order is saved. You can check its current status in your orders.' : 'Payment is not confirmed yet. Please check again shortly.'}</p>{error && <p className="form-error">{error}</p>}{order && <div className="result-card"><span>Order #{order._id.slice(-8)}</span><strong>{NPR.format(order.total)}</strong><span>Payment: {order.paymentStatus} · {order.orderStatus}</span></div>}<div className="result-actions"><Link className="button button-dark" to="/orders">View my orders</Link><Link className="button button-outline" to="/">Continue shopping</Link></div></main>;
@@ -1090,6 +1251,7 @@ export default function App() {
     <Route path="/products/:id" element={<ProductDetail session={session} />} />
     <Route path="/login" element={<AuthPage mode="login" session={session} />} />
     <Route path="/register" element={<AuthPage mode="register" session={session} />} />
+    <Route path="/forgot-password" element={<ForgotPassword />} />
     <Route path="/cart" element={<Protected session={session}><Cart session={session} /></Protected>} />
     <Route path="/checkout" element={<Protected session={session}><Checkout /></Protected>} />
     <Route path="/checkout/payments" element={<Protected session={session}><CheckoutPayments /></Protected>} />

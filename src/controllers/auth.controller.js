@@ -4,6 +4,9 @@ const jwt = require("jsonwebtoken");
 const emailService = require("../services/email.service");
 const { serverError } = require("../services/http.service");
 
+const MIN_PASSWORD_LENGTH = 8;
+const MAX_PASSWORD_LENGTH = 128;
+
 function normalizeEmail(email) {
   return typeof email === "string" ? email.trim().toLowerCase() : "";
 }
@@ -12,6 +15,36 @@ function sanitizeUser(user) {
   const userResponse = user.toObject ? user.toObject() : { ...user };
   delete userResponse.password;
   return userResponse;
+}
+
+function passwordError(password) {
+  if (typeof password !== "string" || password.length < MIN_PASSWORD_LENGTH) {
+    return `Password must be at least ${MIN_PASSWORD_LENGTH} characters long`;
+  }
+  if (password.length > MAX_PASSWORD_LENGTH) {
+    return `Password cannot exceed ${MAX_PASSWORD_LENGTH} characters`;
+  }
+  return null;
+}
+
+function authCookieOptions() {
+  const frontendOrigin = safeOrigin(process.env.FRONTEND_URL);
+  const apiOrigin = safeOrigin(process.env.API_PUBLIC_URL);
+  const crossSite = Boolean(frontendOrigin && apiOrigin && frontendOrigin !== apiOrigin);
+  return {
+    httpOnly: true,
+    sameSite: crossSite ? "none" : "lax",
+    secure: process.env.NODE_ENV === "production"
+  };
+}
+
+function safeOrigin(value) {
+  if (!value) return null;
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
 }
 
 function generateOtp() {
@@ -79,6 +112,10 @@ async function register(req, res) {
   if (!name || !email || !password) {
     return res.status(400).json({ message: "Please provide name, email and password" });
   }
+  const badPassword = passwordError(password);
+  if (badPassword) {
+    return res.status(400).json({ message: badPassword });
+  }
   if (!['buyer', 'seller'].includes(role)) {
     return res.status(400).json({ message: "Choose buyer or seller for your account" });
   }
@@ -119,11 +156,7 @@ async function register(req, res) {
 
     const userResponse = sanitizeUser(newUser);
 
-    res.cookie("token", token, {
-      httpOnly: true,
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-      secure: process.env.NODE_ENV === "production"
-    });
+    res.cookie("token", token, authCookieOptions());
 
     res.status(201).json({
       message: "User registered successfully",
@@ -164,11 +197,7 @@ async function userLoginController(req, res) {
 
     const userResponse = sanitizeUser(user);
 
-    res.cookie("token", token, {
-      httpOnly: true,
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-      secure: process.env.NODE_ENV === "production"
-    });
+    res.cookie("token", token, authCookieOptions());
 
     res.json({ message: "Login successful", user: userResponse, token });
   } catch (error) {
@@ -176,8 +205,84 @@ async function userLoginController(req, res) {
   }
 }
 
+async function forgotPassword(req, res) {
+  const email = normalizeEmail(req.body.email);
+  const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+  const genericResponse = {
+    message: "If an account exists for that email, a password reset code has been sent."
+  };
+
+  if (!email || !emailRegex.test(email)) {
+    return res.status(400).json({ message: "Please provide a valid email address" });
+  }
+
+  try {
+    const user = await userModel.findOne({ email, isActive: { $ne: false } });
+    if (!user) {
+      return res.status(200).json(genericResponse);
+    }
+
+    const otpCode = generateOtp();
+    await Otp.findOneAndUpdate(
+      { email, purpose: 'password_reset' },
+      { otp: otpCode, createdAt: new Date(), purpose: 'password_reset' },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    try {
+      await emailService.sendPasswordResetOtpEmail(email, user.name, otpCode);
+    } catch (emailError) {
+      console.error("Failed to send password reset email:", emailError.message);
+      if (process.env.NODE_ENV !== 'production') {
+        return res.status(200).json({ ...genericResponse, devOtp: otpCode });
+      }
+      return res.status(500).json({ message: "Unable to send the reset email right now. Please try again later." });
+    }
+
+    return res.status(200).json(genericResponse);
+  } catch (error) {
+    return serverError(res, "Failed to start password reset", error);
+  }
+}
+
+async function resetPassword(req, res) {
+  const email = normalizeEmail(req.body.email);
+  const otp = typeof req.body.otp === "string" ? req.body.otp.trim() : "";
+  const newPassword = typeof req.body.newPassword === "string" ? req.body.newPassword : "";
+
+  if (!email || !otp) {
+    return res.status(400).json({ message: "Please provide your email and the reset code" });
+  }
+  const badPassword = passwordError(newPassword);
+  if (badPassword) {
+    return res.status(400).json({ message: badPassword });
+  }
+
+  try {
+    const user = await userModel.findOne({ email });
+    if (!user) {
+      return res.status(400).json({ message: "Invalid or expired reset code. Please request a new one." });
+    }
+
+    const validOtp = await Otp.findOne({ email, purpose: 'password_reset' });
+    if (!validOtp || validOtp.otp !== otp) {
+      return res.status(400).json({ message: "Invalid or expired reset code. Please request a new one." });
+    }
+
+    user.password = newPassword;
+    await user.save();
+    await Otp.deleteOne({ _id: validOtp._id });
+
+    return res.status(200).json({ message: "Password updated. You can now sign in with your new password." });
+  } catch (error) {
+    return serverError(res, "Failed to reset password", error);
+  }
+}
+
 module.exports = {
   sendRegistrationOtp,
   register,
-  userLoginController
+  userLoginController,
+  forgotPassword,
+  resetPassword
 };
