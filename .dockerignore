@@ -1,6 +1,10 @@
 .git
 .env
+.env.*
+.vercel
 node_modules
 dist
 coverage
+npm-debug.log*
+*.log
 npm-debug.log

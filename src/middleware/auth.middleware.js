@@ -15,12 +15,20 @@ async function protect(req, res, next) {
     return res.status(401).json({ message: 'Authentication required' });
   }
 
+  if (!process.env.JWT_SECRET) {
+    return res.status(500).json({ message: 'Authentication service is not configured' });
+  }
+
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await userModel.findById(decoded.id).select('-password');
+    const user = await userModel.findById(decoded.id).select('-password +sessionVersion');
 
     if (!user) {
       return res.status(401).json({ message: 'User no longer exists' });
+    }
+
+    if (decoded.sessionVersion !== (user.sessionVersion || 0)) {
+      return res.status(401).json({ message: 'Session expired. Please sign in again.' });
     }
 
     if (user.isActive === false) {
@@ -45,4 +53,3 @@ function authorize(...roles) {
 }
 
 module.exports = { protect, authorize };
-

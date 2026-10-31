@@ -62,6 +62,11 @@ const userSchema = new mongoose.Schema({
         type: Boolean,
         default: true
     },
+    sessionVersion: {
+        type: Number,
+        default: 0,
+        select: false
+    },
     phone: {
         type: String,
         default: ''

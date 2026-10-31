@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 const NPR = new Intl.NumberFormat('en-NP', { style: 'currency', currency: 'NPR', maximumFractionDigits: 0 });
-const tokenKey = 'sajilo-token';
 
 function useDocumentTitle(title) {
   useEffect(() => {
@@ -36,51 +35,86 @@ function submitPaymentForm(payment) {
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
 
 async function request(path, options = {}) {
-  const token = localStorage.getItem(tokenKey);
   const isFormData = options.body instanceof FormData;
   const headers = { ...(options.body && !isFormData ? { 'Content-Type': 'application/json' } : {}), ...options.headers };
-  if (token) headers.Authorization = `Bearer ${token}`;
   const url = path.startsWith('http') ? path : `${API_BASE_URL}${path}`;
   const response = await fetch(url, { ...options, headers, credentials: 'include' });
   const data = response.status === 204 ? {} : await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.message || 'Something went wrong. Please try again.');
+  if (!response.ok) {
+    const error = new Error(data.message || 'Something went wrong. Please try again.');
+    error.status = response.status;
+    throw error;
+  }
   return data;
 }
 
 function useSession() {
-  const [user, setUser] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('sajilo-user') || 'null'); } catch { return null; }
-  });
+  const [user, setUser] = useState(null);
   const [cartCount, setCartCount] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [sessionError, setSessionError] = useState('');
   const navigate = useNavigate();
+  const sessionGeneration = useRef(0);
 
   const acceptAuth = (data) => {
-    localStorage.setItem(tokenKey, data.token);
-    localStorage.setItem('sajilo-user', JSON.stringify(data.user));
+    sessionGeneration.current += 1;
     setUser(data.user);
+    setLoading(false);
+    setSessionError('');
   };
 
   const logout = async () => {
-    try { await request('/api/v1/auth/logout', { method: 'POST' }); } catch { /* local session is still cleared */ }
-    localStorage.removeItem(tokenKey);
-    localStorage.removeItem('sajilo-user');
-    setUser(null);
-    setCartCount(0);
-    navigate('/');
+    try {
+      await request('/api/v1/auth/logout', { method: 'POST' });
+      sessionGeneration.current += 1;
+      setUser(null);
+      setCartCount(0);
+      setSessionError('');
+      navigate('/');
+    } catch (error) {
+      if (error.status === 401) {
+        sessionGeneration.current += 1;
+        setUser(null);
+        setCartCount(0);
+        setSessionError('');
+        navigate('/');
+        return;
+      }
+      setSessionError(error.message);
+    }
   };
 
   useEffect(() => {
-    if (!user) return;
+    localStorage.removeItem('sajilo-token');
+    localStorage.removeItem('sajilo-user');
+    const generation = sessionGeneration.current;
+    let active = true;
+    request('/api/v1/auth/me')
+      .then(({ user: currentUser }) => {
+        if (active && generation === sessionGeneration.current) setUser(currentUser);
+      })
+      .catch((error) => {
+        if (!active || generation !== sessionGeneration.current || error.status === 401) return;
+        setSessionError(error.message);
+      })
+      .finally(() => {
+        if (active && generation === sessionGeneration.current) setLoading(false);
+      });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!user || loading) return;
     request('/api/v1/users/cart')
       .then(({ cart = [] }) => setCartCount(cart.reduce((sum, row) => sum + row.quantity, 0)))
       .catch(() => setCartCount(0));
-  }, [user]);
+  }, [user, loading]);
 
-  return { user, setUser, cartCount, setCartCount, acceptAuth, logout };
+  return { user, setUser, cartCount, setCartCount, acceptAuth, logout, loading, sessionError };
 }
 
 function Header({ session }) {
-  const { user, cartCount, logout } = session;
+  const { user, cartCount, logout, sessionError } = session;
   return <header className="site-header">
     <div className="header-inner">
       <Link to="/" className="brand" aria-label="Sajilo Pasal home"><img className="brand-mark" src="/images/sajilo-pasal-mark.png" alt="" /><span>Sajilo Pasal<small>EASY MARKET FOR GROCERY</small></span></Link>
@@ -97,6 +131,7 @@ function Header({ session }) {
           <button className="button button-quiet header-logout" onClick={logout}>Log out</button>
         </> : <><Link to="/login" className="header-login">Log in</Link><Link to="/register" className="button button-dark header-join">Create account</Link></>}
       </div>
+      {sessionError && <p className="form-error" role="alert">{sessionError}</p>}
     </div>
   </header>;
 }
@@ -120,6 +155,158 @@ function ProductCard({ product, onAdd, onBuyNow = onAdd, onRemove }) {
     </div>
     {onRemove && <button className="remove-button wishlist-remove" onClick={() => onRemove(product._id)}>Remove from saved items</button>}
   </article>;
+}
+
+const MEAL_PLANNER_OPTIONS = [
+  { value: 'day', label: 'Plan my day' },
+  { value: 'breakfast', label: 'Breakfast' },
+  { value: 'lunch', label: 'Lunch' },
+  { value: 'dinner', label: 'Dinner' },
+  { value: 'snack', label: 'Snack' }
+];
+
+function MealPlanner({ onAdd }) {
+  const [meal, setMeal] = useState('day');
+  const [servings, setServings] = useState('2');
+  const [preferences, setPreferences] = useState('');
+  const [quickPreferences, setQuickPreferences] = useState([]);
+  const [recentIdeas, setRecentIdeas] = useState([]);
+  const [addedProducts, setAddedProducts] = useState(() => new Set());
+  const [recommendations, setRecommendations] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const toggleQuickPreference = (preference) => {
+    setQuickPreferences((current) => current.includes(preference)
+      ? current.filter((value) => value !== preference)
+      : [...current, preference]);
+  };
+
+  const addSuggestedProduct = async (product) => {
+    if (!await onAdd(product)) return;
+    setAddedProducts((current) => new Set(current).add(product._id));
+    window.setTimeout(() => {
+      setAddedProducts((current) => {
+        const next = new Set(current);
+        next.delete(product._id);
+        return next;
+      });
+    }, 2200);
+  };
+
+  const generateIdeas = async (event) => {
+    event?.preventDefault();
+    setLoading(true);
+    setError('');
+    try {
+      const result = await request('/api/v1/meals/recommendations', {
+        method: 'POST',
+        body: JSON.stringify({
+          meal,
+          servings: Number(servings),
+          preferences: [quickPreferences.join(', '), preferences.trim()].filter(Boolean).join(', '),
+          excludeIdeas: recentIdeas.slice(-9)
+        })
+      });
+      setRecommendations(result);
+      setRecentIdeas((current) => [...current, ...result.ideas.map((idea) => ({
+        title: idea.title,
+        productIds: idea.products.map((product) => product._id)
+      }))].slice(-9));
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return <section className="meal-planner section-wrap" aria-labelledby="meal-planner-title">
+    <div className="meal-planner-card">
+      <div className="meal-planner-intro">
+        <span className="meal-planner-mark" aria-hidden="true">✦</span>
+        <p className="eyebrow">A LITTLE HELP WITH WHAT'S COOKING</p>
+        <h2 id="meal-planner-title">Make something good today.</h2>
+        <p>Tell Gemini what you’re planning. It’ll find meal ideas using food that’s actually in stock here.</p>
+      </div>
+      <form className="meal-planner-form" onSubmit={generateIdeas}>
+        <fieldset className="meal-choice-group">
+          <legend>What are you planning?</legend>
+          <div className="meal-choice-list" role="group" aria-label="Meal time">
+            {MEAL_PLANNER_OPTIONS.map((option) => <button
+              key={option.value}
+              type="button"
+              className={`meal-choice${meal === option.value ? ' is-selected' : ''}`}
+              aria-pressed={meal === option.value}
+              onClick={() => setMeal(option.value)}
+            >{option.label}</button>)}
+          </div>
+        </fieldset>
+        <div className="meal-form-row">
+          <div className="meal-servings">
+            <label htmlFor="meal-servings"><span>People</span></label>
+            <div className="servings-stepper">
+              <button type="button" aria-label="Remove one person" disabled={Number(servings) <= 1} onClick={() => setServings(String(Math.max(1, (Number(servings) || 1) - 1)))}>−</button>
+              <input id="meal-servings" type="number" min="1" max="8" step="1" value={servings} onChange={(event) => setServings(event.target.value)} required />
+              <button type="button" aria-label="Add one person" disabled={Number(servings) >= 8} onClick={() => setServings(String(Math.min(8, (Number(servings) || 1) + 1)))}>+</button>
+            </div>
+          </div>
+          <label className="meal-preferences">
+            <span>Preferences <small>Optional</small></span>
+            <input value={preferences} onChange={(event) => setPreferences(event.target.value)} maxLength="190" placeholder="e.g. mild spice, no peanuts" />
+          </label>
+        </div>
+        <div className="meal-quick-picks" role="group" aria-label="Quick preferences">
+          <span>Quick picks</span>
+          {['Vegetarian', 'Quick & easy', 'Budget-friendly'].map((preference) => <button
+            key={preference}
+            type="button"
+            className={`meal-quick-pick${quickPreferences.includes(preference) ? ' is-selected' : ''}`}
+            aria-pressed={quickPreferences.includes(preference)}
+            onClick={() => toggleQuickPreference(preference)}
+          >{preference}</button>)}
+        </div>
+        <button className="button button-dark meal-submit" type="submit" disabled={loading}>
+          {loading ? 'Finding ideas…' : recommendations ? 'Update my menu' : 'Find meal ideas'} <span aria-hidden="true">{loading ? '…' : '✦'}</span>
+        </button>
+        <p className="meal-planner-disclaimer">Your preferences and available food listings go to Gemini. Check product packaging for ingredients and allergens.</p>
+        {loading && <p className="meal-status" role="status">Putting together your menu…</p>}
+        {error && <p className="meal-error" role="alert">{error}</p>}
+      </form>
+    </div>
+    {recommendations && <div className="meal-results">
+      <div className="meal-results-heading">
+        <div><p className="eyebrow">YOUR MEAL IDEAS</p><p>{recommendations.summary}</p></div>
+        <button type="button" className="meal-refresh-button" onClick={() => generateIdeas()} disabled={loading}>
+          <span aria-hidden="true">{loading ? '…' : '↻'}</span>{loading ? 'Finding another menu…' : 'Try a different menu'}
+        </button>
+      </div>
+      {loading && <p className="meal-status meal-refresh-status" role="status">Keeping your current ideas here while we find something new…</p>}
+      <div className={`meal-idea-grid${loading ? ' is-refreshing' : ''}`} aria-live="polite">
+        {recommendations.ideas.map((idea, index) => <article className="meal-idea" key={`${idea.mealType}-${idea.title}`} style={{ '--idea-index': index }}>
+          <span className="meal-type-label">{idea.mealType}</span>
+          <h3>{idea.title}</h3>
+          <p className="meal-idea-description">{idea.description}</p>
+          <div className="meal-product-list">
+            {idea.products.map((product) => <div className="meal-product" key={product._id}>
+              <Link className="meal-product-image" to={`/products/${product._id}`} aria-label={`View ${product.name}`}>
+                {product.images?.[0] ? <img src={product.images[0]} alt="" loading="lazy" /> : <span aria-hidden="true">✦</span>}
+              </Link>
+              <div className="meal-product-copy">
+                <Link to={`/products/${product._id}`}>{product.name}</Link>
+                <span>{NPR.format(product.price)} · {product.category}</span>
+              </div>
+              <button
+                type="button"
+                className={`meal-product-add${addedProducts.has(product._id) ? ' is-added' : ''}`}
+                onClick={() => addSuggestedProduct(product)}
+                aria-label={addedProducts.has(product._id) ? `Added ${product.name} to cart` : `Add ${product.name} to cart`}
+              >{addedProducts.has(product._id) ? '✓' : '+'}</button>
+            </div>)}
+          </div>
+        </article>)}
+      </div>
+    </div>}
+  </section>;
 }
 
 function Home({ session }) {
@@ -146,6 +333,7 @@ function Home({ session }) {
   }, []);
 
   useEffect(() => {
+    setSearch(params.get('search') || '');
     setDistrict(params.get('district') || '');
     setMunicipality(params.get('municipality') || '');
   }, [params]);
@@ -164,13 +352,18 @@ function Home({ session }) {
   }, [params]);
 
   const addToBag = async (product) => {
-    if (!session.user) return window.location.assign('/login');
+    if (!session.user) {
+      window.location.assign('/login');
+      return false;
+    }
     try {
       await request('/api/v1/users/cart', { method: 'POST', body: JSON.stringify({ productId: product._id }) });
       session.setCartCount((count) => count + 1);
       setNotice(`${product.name} added to your bag.`);
       window.setTimeout(() => setNotice(''), 2600);
+      return true;
     } catch (err) { setNotice(err.message); }
+    return false;
   };
 
   const buyNow = async (product) => {
@@ -190,6 +383,37 @@ function Home({ session }) {
     if (search.trim()) next.set('search', search.trim()); else next.delete('search');
     if (district.trim()) next.set('district', district.trim()); else next.delete('district');
     if (municipality.trim()) next.set('municipality', municipality.trim()); else next.delete('municipality');
+    next.set('page', '1');
+    setParams(next);
+  };
+
+  const clearFilters = () => {
+    setSearch('');
+    setDistrict('');
+    setMunicipality('');
+    setParams(new URLSearchParams());
+  };
+
+  const selectCategory = (category) => {
+    const next = new URLSearchParams(params);
+    if (category) next.set('category', category);
+    else next.delete('category');
+    next.set('page', '1');
+    setParams(next);
+  };
+
+  const activeFilters = [
+    ['search', params.get('search') ? `Search: ${params.get('search')}` : ''],
+    ['category', params.get('category') ? `Category: ${params.get('category')}` : ''],
+    ['province', params.get('province') ? `Province: ${params.get('province')}` : ''],
+    ['district', params.get('district') ? `District: ${params.get('district')}` : ''],
+    ['municipality', params.get('municipality') ? `Municipality: ${params.get('municipality')}` : ''],
+    ['maxPrice', params.get('maxPrice') ? `Up to ${NPR.format(Number(params.get('maxPrice')))}` : '']
+  ].filter(([, label]) => label);
+
+  const removeFilter = (key) => {
+    const next = new URLSearchParams(params);
+    next.delete(key);
     next.set('page', '1');
     setParams(next);
   };
@@ -216,12 +440,22 @@ function Home({ session }) {
   return <main>
     <section className="hero">
       <div className="hero-copy"><p className="eyebrow">MADE IN NEPAL. FOUND BY YOU.</p><h1>Good things,<br /><em>close to home.</em></h1><p className="hero-description">Thoughtful finds from independent makers and trusted local sellers. Discover what Nepal makes best.</p><a className="button button-dark" href="#shop">Explore the collection <span aria-hidden="true">↘</span></a></div>
-      <div className="hero-art" aria-label="Sajilo Pasal, easy market for grocery"><img className="hero-logo" src="/images/sajilo-pasal-logo.png" alt="Sajilo Pasal grocery cart logo" /><div className="hero-art-caption"><span>MADE FOR NEPAL</span><span>SHOP LOCAL, LIVE BETTER</span></div></div>
+      <div className="hero-art" aria-label="Sajilo Pasal, easy market for grocery"><img className="hero-logo" src="/images/sajilo-pasal-logo.png" alt="Sajilo Pasal grocery cart logo" /><div className="hero-sticker"><span aria-hidden="true">✦</span><span><strong>Find your new favourite</strong><small>Shop the makers near you</small></span></div><div className="hero-art-caption"><span>MADE FOR NEPAL</span><span>SHOP LOCAL, LIVE BETTER</span></div></div>
       <div className="hero-side-note">A BETTER WAY TO SHOP, ONE LOCAL FIND AT A TIME</div>
     </section>
+    <section className="trust-strip" aria-label="Why shop Sajilo Pasal">
+      <div className="trust-item"><span className="trust-icon" aria-hidden="true">⌂</span><div><strong>Made close to home</strong><span>Discover Nepal-made goods</span></div></div>
+      <div className="trust-item"><span className="trust-icon" aria-hidden="true">♡</span><div><strong>People-first shopping</strong><span>Support independent sellers</span></div></div>
+      <div className="trust-item"><span className="trust-icon" aria-hidden="true">↗</span><div><strong>Easy from start to finish</strong><span>Browse, choose, and enjoy</span></div></div>
+    </section>
+    <MealPlanner onAdd={addToBag} />
 
     <section id="shop" className="catalog section-wrap">
       <div className="section-heading"><div><p className="eyebrow">THE COLLECTION</p><h2>Shop the good stuff.</h2></div><p className="muted">Considered essentials, made and sold by people who care.</p></div>
+      {categories.length > 0 && <nav className="category-shortcuts" aria-label="Browse product categories">
+        <button type="button" className={`category-shortcut${!params.get('category') ? ' is-selected' : ''}`} aria-pressed={!params.get('category')} onClick={() => selectCategory('')}>Everything</button>
+        {categories.map((category) => <button key={category} type="button" className={`category-shortcut${params.get('category') === category ? ' is-selected' : ''}`} aria-pressed={params.get('category') === category} onClick={() => selectCategory(category)}>{category}</button>)}
+      </nav>}
       <form className="catalog-toolbar" onSubmit={submitSearch}>
         <label className="search-control"><span className="visually-hidden">Search products</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search products, makers, categories" /><button aria-label="Search">⌕</button></label>
         <label><span className="visually-hidden">Category</span><select aria-label="Filter by category" value={params.get('category') || ''} onChange={(event) => { const next = new URLSearchParams(params); event.target.value ? next.set('category', event.target.value) : next.delete('category'); next.set('page', '1'); setParams(next); }}><option value="">All categories</option>{categories.map((category) => <option key={category} value={category}>{category}</option>)}</select></label>
@@ -232,6 +466,13 @@ function Home({ session }) {
         <label><span className="visually-hidden">Municipality</span><input aria-label="Municipality" value={municipality} onChange={(event) => setMunicipality(event.target.value)} placeholder="Municipality" /></label>
         <button className="button button-outline" type="submit">Apply filters</button>
       </form>
+      {activeFilters.length > 0 && <div className="active-filters" aria-label="Active filters">
+        <span className="active-filters-label">Showing:</span>
+        {activeFilters.map(([key, label]) => <button key={key} className="filter-chip" type="button" onClick={() => removeFilter(key)} aria-label={`Remove ${label} filter`}>
+          {label}<span aria-hidden="true">×</span>
+        </button>)}
+        <button className="clear-filters" type="button" onClick={clearFilters}>Clear all</button>
+      </div>}
       {notice && <p role="status" className="inline-notice">{notice}</p>}
       {catalogContent}
     </section>
@@ -328,7 +569,9 @@ function AuthPage({ mode, session }) {
           body: JSON.stringify({ name: body.name, email: body.email })
         });
         setStep('otp');
-        setNotice(res.message || `Verification code sent to ${body.email}. Please check your inbox.`);
+        setNotice(res.devOtp
+          ? `${res.message} (development code: ${res.devOtp})`
+          : res.message || `Verification code sent to ${body.email}. Please check your inbox.`);
       } else if (step === 'otp') {
         const fullBody = { ...regData, otp: otp.trim() };
         const data = await request('/api/v1/auth/register', {
@@ -354,7 +597,9 @@ function AuthPage({ mode, session }) {
         method: 'POST',
         body: JSON.stringify({ name: regData.name, email: regData.email })
       });
-      setNotice(res.message || `A new verification code was sent to ${regData.email}`);
+      setNotice(res.devOtp
+        ? `${res.message} (development code: ${res.devOtp})`
+        : res.message || `A new verification code was sent to ${regData.email}`);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -379,6 +624,11 @@ function AuthPage({ mode, session }) {
           ? `Enter the 6-digit code sent to ${regData.email}`
           : 'Your next local favourite is just around the corner.'}
       </p>
+      {mode === 'login' && (
+        <p className="auth-guidance">
+          New accounts need email verification before sign-in. If you haven’t finished signup, <Link to="/register">create your account</Link> and complete the verification-code step first.
+        </p>
+      )}
 
       {notice && <p className="success-message" role="status" style={{ marginBottom: 16 }}>{notice}</p>}
       {error && <p className="form-error" role="alert" style={{ marginBottom: 16 }}>{error}</p>}
@@ -426,7 +676,7 @@ function AuthPage({ mode, session }) {
             </label>
           </>}
           <Field label="Email address" name="email" type="email" defaultValue={regData.email} autoComplete="email" required />
-          <Field label="Password" name="password" type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} minLength="8" required />
+          <PasswordField label="Password" name="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} minLength="8" required />
           {mode === 'login' && <p className="auth-switch" style={{ marginTop: 0 }}><Link to="/forgot-password">Forgot your password?</Link></p>}
           <button className="button button-dark full-width" disabled={loading}>
             {loading ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Continue & Send Verification Code'}
@@ -520,7 +770,7 @@ function ForgotPassword() {
             <span>Reset code</span>
             <input name="otp" type="text" inputMode="numeric" maxLength={6} placeholder="e.g. 123456" value={otp} onChange={(event) => setOtp(event.target.value)} required />
           </label>
-          <Field label="New password (at least 8 characters)" name="newPassword" type="password" minLength="8" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} required />
+          <PasswordField label="New password (at least 8 characters)" name="newPassword" minLength="8" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} required />
           <button className="button button-dark full-width" disabled={loading || !otp.trim() || newPassword.length < 8}>{loading ? 'Updating…' : 'Update password'}</button>
           <button type="button" className="button button-quiet" disabled={loading} onClick={() => { setStep('email'); setError(''); setNotice(''); }}>← Use a different email</button>
         </form>
@@ -533,7 +783,31 @@ function Field({ label, name, type = 'text', required = false, ...props }) {
   return <label className="field"><span>{label}</span><input name={name} type={type} required={required} {...props} /></label>;
 }
 
+function PasswordField({ label, name, ...props }) {
+  const [visible, setVisible] = useState(false);
+
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <span className="password-field-control">
+        <input name={name} type={visible ? 'text' : 'password'} {...props} />
+        <button
+          type="button"
+          className="password-visibility-toggle"
+          aria-label={visible ? 'Hide password' : 'Show password'}
+          aria-pressed={visible}
+          onClick={() => setVisible((current) => !current)}
+        >
+          {visible ? 'Hide' : 'Show'}
+        </button>
+      </span>
+    </label>
+  );
+}
+
 function Protected({ session, roles, children }) {
+  if (session.loading) return <main className="page-wrap"><div className="loading-state">Checking your account…</div></main>;
+  if (session.sessionError) return <main className="page-wrap"><div className="state-card"><h2>Unable to verify your session</h2><p>{session.sessionError}</p><button className="button button-outline" onClick={() => window.location.reload()}>Try again</button></div></main>;
   if (!session.user) return <Navigate to="/login" replace />;
   if (roles && !roles.includes(session.user.role)) return <main className="page-wrap"><div className="state-card"><h2>Not available for this account</h2><p>This area requires a different account role.</p><Link to="/" className="button button-outline">Return to shop</Link></div></main>;
   return children;

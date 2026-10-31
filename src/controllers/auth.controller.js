@@ -1,5 +1,6 @@
 const userModel = require("../models/user.model");
 const Otp = require("../models/otp.model");
+const crypto = require("node:crypto");
 const jwt = require("jsonwebtoken");
 const emailService = require("../services/email.service");
 const { serverError } = require("../services/http.service");
@@ -14,6 +15,7 @@ function normalizeEmail(email) {
 function sanitizeUser(user) {
   const userResponse = user.toObject ? user.toObject() : { ...user };
   delete userResponse.password;
+  delete userResponse.sessionVersion;
   return userResponse;
 }
 
@@ -34,8 +36,18 @@ function authCookieOptions() {
   return {
     httpOnly: true,
     sameSite: crossSite ? "none" : "lax",
-    secure: process.env.NODE_ENV === "production"
+    secure: process.env.NODE_ENV === "production" || crossSite,
+    path: "/"
   };
+}
+
+function setAuthCookie(res, token) {
+  const expiresAt = jwt.decode(token)?.exp;
+  const options = authCookieOptions();
+  if (Number.isFinite(expiresAt)) {
+    options.maxAge = Math.max(0, expiresAt * 1000 - Date.now());
+  }
+  res.cookie("token", token, options);
 }
 
 function safeOrigin(value) {
@@ -48,7 +60,7 @@ function safeOrigin(value) {
 }
 
 function generateOtp() {
-  return Math.floor(100000 + Math.random() * 900000).toString();
+  return crypto.randomInt(100000, 1000000).toString();
 }
 
 async function sendRegistrationOtp(req, res) {
@@ -80,7 +92,12 @@ async function sendRegistrationOtp(req, res) {
     );
 
     try {
-      await emailService.sendRegistrationOtpEmail(email, name, otpCode);
+      const delivery = await emailService.sendRegistrationOtpEmail(email, name, otpCode);
+      return res.status(200).json({
+        message: "Verification code sent to your email",
+        email,
+        ...(delivery?.simulated && process.env.NODE_ENV !== 'production' ? { devOtp: otpCode } : {})
+      });
     } catch (emailError) {
       console.error("Failed to send OTP email:", emailError.message);
       // In development or if SMTP is down, return helpful message
@@ -92,11 +109,6 @@ async function sendRegistrationOtp(req, res) {
       }
       return res.status(500).json({ message: "Unable to send verification email. Please check your email address or try again later." });
     }
-
-    return res.status(200).json({
-      message: "Verification code sent to your email",
-      email
-    });
   } catch (error) {
     return serverError(res, "Failed to send verification code", error);
   }
@@ -134,13 +146,10 @@ async function register(req, res) {
     }
 
     // Verify OTP
-    const validOtp = await Otp.findOne({ email, purpose: 'registration' });
-    if (!validOtp || validOtp.otp !== otp) {
+    const validOtp = await Otp.findOneAndDelete({ email, purpose: 'registration', otp });
+    if (!validOtp) {
       return res.status(400).json({ message: "Invalid or expired verification code. Please request a new code." });
     }
-
-    // Remove used OTP
-    await Otp.deleteOne({ _id: validOtp._id });
 
     const newUser = await userModel.create({ name, email, password, role });
 
@@ -150,18 +159,17 @@ async function register(req, res) {
       console.error("Welcome email failed:", emailError.message);
     }
 
-    const token = jwt.sign({ id: newUser._id, role: newUser.role }, process.env.JWT_SECRET, {
+    const token = jwt.sign({ id: newUser._id, sessionVersion: newUser.sessionVersion }, process.env.JWT_SECRET, {
       expiresIn: process.env.JWT_EXPIRES_IN
     });
 
     const userResponse = sanitizeUser(newUser);
 
-    res.cookie("token", token, authCookieOptions());
+    setAuthCookie(res, token);
 
     res.status(201).json({
       message: "User registered successfully",
-      user: userResponse,
-      token
+      user: userResponse
     });
   } catch (error) {
     return serverError(res, error.code === 11000 ? "User already exists" : "Server error", error, error.code === 11000 ? 409 : 500);
@@ -181,7 +189,7 @@ async function userLoginController(req, res) {
   }
 
   try {
-    const user = await userModel.findOne({ email }).select("+password");
+    const user = await userModel.findOne({ email }).select("+password +sessionVersion");
     if (!user) {
       return res.status(401).json({ message: "Invalid email or password" });
     }
@@ -191,15 +199,15 @@ async function userLoginController(req, res) {
       return res.status(401).json({ message: "Invalid email or password" });
     }
 
-    const token = jwt.sign({ id: user._id, role: user.role }, process.env.JWT_SECRET, {
+    const token = jwt.sign({ id: user._id, sessionVersion: user.sessionVersion }, process.env.JWT_SECRET, {
       expiresIn: process.env.JWT_EXPIRES_IN
     });
 
     const userResponse = sanitizeUser(user);
 
-    res.cookie("token", token, authCookieOptions());
+    setAuthCookie(res, token);
 
-    res.json({ message: "Login successful", user: userResponse, token });
+    res.json({ message: "Login successful", user: userResponse });
   } catch (error) {
     return serverError(res, "Server error", error);
   }
@@ -264,14 +272,14 @@ async function resetPassword(req, res) {
       return res.status(400).json({ message: "Invalid or expired reset code. Please request a new one." });
     }
 
-    const validOtp = await Otp.findOne({ email, purpose: 'password_reset' });
-    if (!validOtp || validOtp.otp !== otp) {
+    const validOtp = await Otp.findOneAndDelete({ email, purpose: 'password_reset', otp });
+    if (!validOtp) {
       return res.status(400).json({ message: "Invalid or expired reset code. Please request a new one." });
     }
 
     user.password = newPassword;
+    user.sessionVersion = (user.sessionVersion || 0) + 1;
     await user.save();
-    await Otp.deleteOne({ _id: validOtp._id });
 
     return res.status(200).json({ message: "Password updated. You can now sign in with your new password." });
   } catch (error) {
@@ -279,10 +287,27 @@ async function resetPassword(req, res) {
   }
 }
 
+function getCurrentUser(req, res) {
+  return res.json({ user: sanitizeUser(req.user) });
+}
+
+async function logoutUser(req, res) {
+  try {
+    await userModel.updateOne({ _id: req.user._id }, { $inc: { sessionVersion: 1 } });
+    res.clearCookie("token", authCookieOptions());
+    return res.json({ message: "Logout successful" });
+  } catch (error) {
+    return serverError(res, "Failed to log out", error);
+  }
+}
+
 module.exports = {
   sendRegistrationOtp,
   register,
   userLoginController,
+  getCurrentUser,
+  logoutUser,
+  authCookieOptions,
   forgotPassword,
   resetPassword
 };

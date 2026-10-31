@@ -1,8 +1,11 @@
-const { uploadProductImage } = require('../services/image.service');
+const { uploadProductImage, detectImageMimeType } = require('../services/image.service');
 
 async function uploadProductImageController(req, res) {
   if (!req.file) {
     return res.status(400).json({ message: 'Choose an image file to upload' });
+  }
+  if (detectImageMimeType(req.file.buffer) !== req.file.mimetype) {
+    return res.status(400).json({ message: 'The image contents do not match the selected file type' });
   }
 
   try {

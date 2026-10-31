@@ -1,5 +1,6 @@
 const express = require("express");
-const { register, sendRegistrationOtp, userLoginController, forgotPassword, resetPassword } = require("../controllers/auth.controller");
+const { register, sendRegistrationOtp, userLoginController, getCurrentUser, logoutUser, forgotPassword, resetPassword } = require("../controllers/auth.controller");
+const { protect } = require("../middleware/auth.middleware");
 
 const router = express.Router();
 
@@ -8,9 +9,7 @@ router.post("/register", register);
 router.post("/login", userLoginController);
 router.post("/forgot-password", forgotPassword);
 router.post("/reset-password", resetPassword);
-router.post("/logout", (req, res) => {
-  res.clearCookie('token');
-  return res.json({ message: 'Logout successful' });
-});
+router.get("/me", protect, getCurrentUser);
+router.post("/logout", protect, logoutUser);
 
 module.exports = router;

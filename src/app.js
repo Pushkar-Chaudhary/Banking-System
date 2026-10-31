@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const authRouter = require('./routes/auth.routes');
 const productRouter = require('./routes/product.routes');
+const mealRouter = require('./routes/meal.routes');
 const userRouter = require('./routes/user.routes');
 const orderRouter = require('./routes/order.routes');
 const paymentRouter = require('./routes/payment.routes');
@@ -42,6 +43,12 @@ if (process.env.NODE_ENV !== 'production') {
   allowedOrigins.add('http://localhost:4173');
 }
 
+function isLocalDevelopmentOrigin(origin) {
+  if (process.env.NODE_ENV === 'production' || !origin) return false;
+  const url = new URL(origin);
+  return url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+}
+
 app.use(cors({
   origin: (origin, callback) => {
     // No origin header: same-origin GETs, curl, or native apps.
@@ -78,6 +85,18 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 app.use(cookieParser());
 
+app.use((req, res, next) => {
+  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method) || !req.cookies?.token) {
+    return next();
+  }
+  const origin = parseOrigin(req.get('origin'));
+  const requestOrigin = parseOrigin(`${req.protocol}://${req.get('host')}`);
+  if (!origin || (origin !== requestOrigin && !allowedOrigins.has(origin) && !isLocalDevelopmentOrigin(origin))) {
+    return res.status(403).json({ message: 'Request origin is not allowed' });
+  }
+  return next();
+});
+
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 15,
@@ -92,6 +111,13 @@ const sensitiveLimiter = rateLimit({
   legacyHeaders: false,
   message: { message: 'Too many requests. Please slow down and try again shortly.' }
 });
+const mealRecommendationLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { message: 'Too many meal requests. Please try again later.' }
+});
 
 app.use('/api/v1/auth/login', authLimiter);
 app.use('/api/v1/auth/register', authLimiter);
@@ -100,9 +126,11 @@ app.use('/api/v1/auth/forgot-password', authLimiter);
 app.use('/api/v1/auth/reset-password', authLimiter);
 app.use('/api/v1/orders', (req, res, next) => (req.method === 'POST' ? sensitiveLimiter(req, res, next) : next()));
 app.use('/api/v1/payments/esewa/initiate', sensitiveLimiter);
+app.use('/api/v1/meals/recommendations', mealRecommendationLimiter);
 
 app.use('/api/v1/auth', authRouter);
 app.use('/api/v1/products', productRouter);
+app.use('/api/v1/meals', mealRouter);
 app.use('/api/v1/users', userRouter);
 app.use('/api/v1/orders', orderRouter);
 app.use('/api/v1/payments', paymentRouter);

@@ -1,4 +1,10 @@
 require('dotenv').config();
+const { getProductionConfigErrors } = require('./src/config/production-env');
+const productionConfigErrors = getProductionConfigErrors();
+if (productionConfigErrors.length) {
+  throw new Error(`Invalid production configuration:\n- ${productionConfigErrors.join('\n- ')}`);
+}
+
 const app = require('./src/app');
 const connectDB = require('./src/config/db');
 const { expirePendingEsewaOrders } = require('./src/services/inventory.service');

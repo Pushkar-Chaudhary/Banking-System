@@ -1,4 +1,5 @@
 require('dotenv').config();
+const dns = require('node:dns');
 const mongoose = require('mongoose');
 const userModel = require('../src/models/user.model');
 const Product = require('../src/models/product.model');
@@ -136,6 +137,14 @@ async function seedDemoCatalog() {
     throw new Error('Set DEMO_SELLER_PASSWORD to a private value of at least 12 characters in your local .env');
   }
   if (!process.env.MONGO_URI) throw new Error('MONGO_URI is required');
+
+  if (process.env.MONGO_DNS_SERVERS) {
+    const dnsServers = process.env.MONGO_DNS_SERVERS.split(',').map((server) => server.trim()).filter(Boolean);
+    if (dnsServers.length === 0) {
+      throw new Error('MONGO_DNS_SERVERS must contain at least one DNS server address');
+    }
+    dns.setServers(dnsServers);
+  }
 
   await mongoose.connect(process.env.MONGO_URI);
   await ensureDefaultCategories();

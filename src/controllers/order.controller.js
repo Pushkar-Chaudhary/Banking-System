@@ -398,6 +398,13 @@ async function updateSellerFulfillment(req, res) {
       return res.status(404).json({ message: 'Order not found' });
     }
 
+    if (order.stockReleased || order.orderStatus === 'CANCELLED') {
+      return res.status(409).json({ message: 'Cancelled orders cannot be fulfilled' });
+    }
+    if (order.paymentMethod === 'esewa' && order.paymentStatus !== 'PAID') {
+      return res.status(409).json({ message: 'eSewa orders can only be fulfilled after payment is confirmed' });
+    }
+
     const item = order.items.id(req.params.itemId);
     if (!item || String(item.seller) !== String(req.user._id)) {
       return res.status(404).json({ message: 'Order item not found for this seller' });

@@ -11,6 +11,7 @@
     "start": "node server.js",
     "dev": "node --watch server.js",
     "dev:client": "vite --host 0.0.0.0",
+    "dev:all": "node scripts/dev.js",
     "build": "vite build",
     "test": "node --test",
     "seed:demo": "node scripts/seed-demo-catalog.js"
@@ -20,6 +21,8 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@ai-sdk/google": "^4.0.108",
+    "ai": "^7.0.157",
     "bcrypt": "^6.0.0",
     "cloudinary": "^2.7.0",
     "cookie-parser": "^1.4.7",
@@ -27,7 +30,6 @@
     "dotenv": "^18.0.5",
     "express": "^5.2.1",
     "express-rate-limit": "^7.5.0",
-    "gitignore": "^0.7.0",
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.11.0",
@@ -35,7 +37,8 @@
     "nodemailer": "^10.0.15",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "react-router-dom": "^7.6.2"
+    "react-router-dom": "^7.6.2",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.5.2",

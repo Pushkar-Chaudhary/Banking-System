@@ -6,7 +6,7 @@ const Product = require('../src/models/product.model');
 const Checkout = require('../src/models/checkout.model');
 const userModel = require('../src/models/user.model');
 const emailService = require('../src/services/email.service');
-const { createOrder } = require('../src/controllers/order.controller');
+const { createOrder, updateSellerFulfillment } = require('../src/controllers/order.controller');
 
 const buyerId = '507f1f77bcf86cd799439011';
 const sellerId = '507f1f77bcf86cd799439012';
@@ -281,4 +281,27 @@ test('orders over 5000 NPR per seller ship free', async () => {
     assert.equal(res.body.orders[0].shippingCost, 0);
     assert.equal(res.body.orders[0].total, 5200);
   });
+});
+
+test('seller fulfillment rejects unpaid eSewa and cancelled orders', async () => {
+  for (const order of [
+    { paymentMethod: 'esewa', paymentStatus: 'PENDING', orderStatus: 'PENDING', stockReleased: false },
+    { paymentMethod: 'cash_on_delivery', paymentStatus: 'FAILED', orderStatus: 'CANCELLED', stockReleased: true }
+  ]) {
+    let saved = false;
+    order.items = { id: () => ({ seller: sellerId, fulfillmentStatus: 'PENDING' }), every: () => false, some: () => false };
+    order.save = async () => { saved = true; };
+    await withPatchedMocks([
+      [Order, 'findById', async () => order]
+    ], async () => {
+      const res = responseRecorder();
+      await updateSellerFulfillment({
+        params: { orderId: '507f1f77bcf86cd799439015', itemId: '507f1f77bcf86cd799439016' },
+        user: { _id: sellerId },
+        body: { fulfillmentStatus: 'DELIVERED' }
+      }, res);
+      assert.equal(res.statusCode, 409);
+      assert.equal(saved, false);
+    });
+  }
 });

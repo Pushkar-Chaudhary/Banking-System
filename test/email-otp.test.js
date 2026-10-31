@@ -2,10 +2,51 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const emailService = require('../src/services/email.service');
 
+const emailEnvironmentKeys = [
+  'EMAIL_USER', 'EMAIL_PASS', 'EMAIL_PASSWORD', 'CLIENT_ID', 'CLIENT_SECRET',
+  'REFRESH_TOKEN', 'SMTP_HOST', 'SMTP_USER', 'SMTP_PASS'
+];
+
+function clearEmailEnvironment() {
+  const previous = Object.fromEntries(emailEnvironmentKeys.map((key) => [key, process.env[key]]));
+  emailEnvironmentKeys.forEach((key) => delete process.env[key]);
+  return () => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  };
+}
+
 test('sendRegistrationOtpEmail formats email properly and executes fallback without throwing', async () => {
-  const result = await emailService.sendRegistrationOtpEmail('test@example.com', 'Test User', '123456');
-  assert.ok(result);
-  assert.ok(result.messageId);
+  const previousNodeEnv = process.env.NODE_ENV;
+  const restoreEmailEnvironment = clearEmailEnvironment();
+  process.env.NODE_ENV = 'test';
+  try {
+    const result = await emailService.sendRegistrationOtpEmail('test@example.com', 'Test User', '123456');
+    assert.ok(result);
+    assert.ok(result.messageId);
+  } finally {
+    restoreEmailEnvironment();
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
+  }
+});
+
+test('email delivery fails clearly when production has no configured provider', async () => {
+  const previousNodeEnv = process.env.NODE_ENV;
+  const restoreEmailEnvironment = clearEmailEnvironment();
+  process.env.NODE_ENV = 'production';
+  try {
+    await assert.rejects(
+      emailService.sendRegistrationOtpEmail('test@example.com', 'Test User', '123456'),
+      /Email transport is not configured for production/
+    );
+  } finally {
+    restoreEmailEnvironment();
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
+  }
 });
 
 test('sendOrderConfirmationToBuyer formats buyer order confirmation email without throwing', async () => {

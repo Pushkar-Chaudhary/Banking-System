@@ -63,6 +63,9 @@ const sendEmail = async (to, subject, text, html) => {
   const transporter = getTransporter();
 
   if (!transporter) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('Email transport is not configured for production');
+    }
     console.warn(`[EMAIL NOTICE] No email transport configured in environment. Simulation email to <${to}>:`);
     console.warn(`Subject: ${subject}`);
     console.warn(`Body: ${text}`);

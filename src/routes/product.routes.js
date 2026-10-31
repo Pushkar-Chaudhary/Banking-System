@@ -7,7 +7,7 @@ const { uploadProductImageController } = require('../controllers/image.controlle
 const router = express.Router();
 const imageUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+  limits: { fileSize: 4 * 1024 * 1024, files: 1 },
   fileFilter: (req, file, callback) => {
     if (!['image/jpeg', 'image/png', 'image/webp', 'image/avif'].includes(file.mimetype)) {
       return callback(new Error('Only JPEG, PNG, WebP and AVIF images are supported'));

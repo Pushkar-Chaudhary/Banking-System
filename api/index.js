@@ -3,6 +3,7 @@ const app = require('../src/app');
 const connectDB = require('../src/config/db');
 const { ensureDefaultCategories } = require('../src/services/catalog.service');
 const { expirePendingEsewaOrders } = require('../src/services/inventory.service');
+const { getProductionConfigErrors } = require('../src/config/production-env');
 
 let categoriesInitialized = false;
 let lastCleanupAt = 0;
@@ -21,17 +22,27 @@ function scheduleExpiredPaymentCleanup() {
 }
 
 module.exports = async (req, res) => {
+  if (req.method === 'GET' && req.url?.split('?')[0] === '/health/live') {
+    return app(req, res);
+  }
+
+  const productionConfigErrors = getProductionConfigErrors();
+  if (productionConfigErrors.length) {
+    console.error('Vercel API production configuration is invalid:', productionConfigErrors);
+    return res.status(503).json({ message: 'API production configuration is incomplete.' });
+  }
+
   try {
     await connectDB();
     if (!categoriesInitialized) {
-      await ensureDefaultCategories().catch((e) => console.warn('Categories init warning:', e.message));
+      await ensureDefaultCategories();
       categoriesInitialized = true;
     }
     scheduleExpiredPaymentCleanup();
   } catch (err) {
-    console.error('Database connection error in Vercel serverless function:', err.message);
+    console.error('Vercel API initialization failed:', err.message);
     return res.status(500).json({
-      message: 'Database connection failed. Please ensure MONGO_URI is configured correctly in Vercel environment variables.'
+      message: 'The API could not connect to MongoDB or initialize marketplace data. Check MONGO_URI and database availability.'
     });
   }
 
